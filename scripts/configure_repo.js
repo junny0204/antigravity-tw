@@ -42,13 +42,17 @@ function configureRepository({
     };
     fs.writeFileSync(cfgPath, JSON.stringify(updated, null, 2) + '\n');
 
-    // Update macOS installer clone URL
+    // Update macOS installer clone and tarball fallback URLs
     const macInstallerPath = path.join(repoRoot, 'install_macos_autowatcher.sh');
     if (fs.existsSync(macInstallerPath)) {
         const raw = fs.readFileSync(macInstallerPath, 'utf8');
-        const next = raw.replace(
+        let next = raw.replace(
             /git clone https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git "\$DIR"/g,
             `git clone https://github.com/${cleanRepo}.git "$DIR"`
+        );
+        next = next.replace(
+            /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/archive\/refs\/heads\/main\.tar\.gz/g,
+            `https://github.com/${cleanRepo}/archive/refs/heads/main.tar.gz`
         );
         if (next !== raw) fs.writeFileSync(macInstallerPath, next);
     }

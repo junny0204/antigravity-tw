@@ -21,44 +21,92 @@ elif [ -f "$PWD/auto_localize_watcher.js" ]; then
     DIR="$PWD"
 else
     if [ "$EUID" -eq 0 ]; then
-        echo "請先以一般使用者下載專案及依賴，再執行安裝。" >&2
+        echo "請先以一般使用者執行本安裝指令（需要管理員權限時腳本會自動提示輸入密碼）。" >&2
         exit 1
     fi
     DIR="$HOME/.antigravity-tw"
-    if [ -d "$DIR/.git" ]; then
-        git -C "$DIR" pull --ff-only
+    HAS_GIT=0
+    if xcode-select -p >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+        HAS_GIT=1
+    fi
+    if [ "$HAS_GIT" -eq 1 ] && [ -d "$DIR/.git" ] && git -C "$DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "🔄 更新既有專案至最新版本..."
+        git -C "$DIR" fetch --depth=1 origin main && git -C "$DIR" reset --hard origin/main
     else
-        git clone https://github.com/junny0204/antigravity-tw.git "$DIR"
+        if [ -e "$DIR" ]; then
+            BACKUP="${DIR}.bak-$(date +%Y%m%d%H%M%S)"
+            echo "📦 發現既有目錄，已安全移至 $BACKUP 後重新取得最新版..."
+            mv "$DIR" "$BACKUP"
+        fi
+        if [ "$HAS_GIT" -eq 1 ]; then
+            echo "⬇️ 正在下載 antigravity-tw..."
+            git clone https://github.com/junny0204/antigravity-tw.git "$DIR"
+        else
+            echo "⬇️ 未偵測到 Git，改用內建 curl 下載最新版本..."
+            TMP_TAR="$(mktemp -d)"
+            curl -fsSL "https://github.com/junny0204/antigravity-tw/archive/refs/heads/main.tar.gz" | tar -xz -C "$TMP_TAR"
+            mv "$TMP_TAR"/antigravity-tw-* "$DIR"
+            rm -rf "$TMP_TAR"
+        fi
     fi
     exec bash "$DIR/install_macos_autowatcher.sh" "$@"
 fi
 
 cd "$DIR"
 
-# 尋找可用的 Node.js 執行檔 (支援官方獨立安裝、Homebrew 或環境 PATH)
+# 尋找可用的 Node.js 執行檔 (支援官方獨立安裝、Homebrew、nvm、volta、fnm、mise、asdf 或環境 PATH)
 NODE_BIN=""
 CANDIDATES=(
-    "/usr/local/bin/node"
     "/opt/homebrew/bin/node"
+    "/usr/local/bin/node"
+    "$HOME/.volta/bin/node"
+    "$HOME/.fnm/current/bin/node"
+    "$HOME/.local/share/mise/shims/node"
+    "$HOME/.asdf/shims/node"
     "$(command -v node 2>/dev/null || true)"
 )
+if [ -d "$HOME/.nvm/versions/node" ]; then
+    while IFS= read -r nvm_node; do
+        [ -n "$nvm_node" ] && CANDIDATES+=("$nvm_node")
+    done < <(ls -1d "$HOME/.nvm/versions/node"/v*/bin/node 2>/dev/null | sort -r)
+fi
 for prev_node in /Library/Application\ Support/Antigravity2TW/runtime.*/node; do
     if [ -x "$prev_node" ]; then
         CANDIDATES+=("$prev_node")
     fi
 done
 
-for cand in "${CANDIDATES[@]}"; do
-    if [ -n "$cand" ] && [ -x "$cand" ]; then
-        if "$cand" -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<12)) process.exit(1)' 2>/dev/null; then
-            NODE_BIN="$cand"
-            break
+find_valid_node() {
+    for cand in "$@"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            if "$cand" -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<12)) process.exit(1)' 2>/dev/null; then
+                NODE_BIN="$cand"
+                return 0
+            fi
         fi
-    fi
-done
+    done
+    return 1
+}
+
+find_valid_node "${CANDIDATES[@]}" || true
 
 if [ -z "$NODE_BIN" ]; then
-    echo "請先安裝 Node.js 22.12+ (可透過 nodejs.org 官方套件或 brew install node)。" >&2
+    BREW_BIN=""
+    for b in "/opt/homebrew/bin/brew" "/usr/local/bin/brew" "$(command -v brew 2>/dev/null || true)"; do
+        if [ -n "$b" ] && [ -x "$b" ]; then
+            BREW_BIN="$b"
+            break
+        fi
+    done
+    if [ -n "$BREW_BIN" ] && [ "$EUID" -ne 0 ]; then
+        echo "📦 未偵測到 Node.js 22.12+，正在透過 Homebrew 自動安裝 Node.js..."
+        "$BREW_BIN" install node
+        find_valid_node "/opt/homebrew/bin/node" "/usr/local/bin/node" "$(command -v node 2>/dev/null || true)" || true
+    fi
+fi
+
+if [ -z "$NODE_BIN" ]; then
+    echo "請先安裝 Node.js 22.12+（請至 https://nodejs.org/ 下載 LTS 安裝包後再重貼一次指令）。" >&2
     exit 1
 fi
 
@@ -182,6 +230,8 @@ PLIST_EOF
     /usr/bin/install -o root -g wheel -m 644 "$PLIST_TMP" "$PLIST"
     /bin/rm -f "$PLIST_TMP"
     /bin/launchctl enable "system/$LABEL"
+    echo "🌐 正在立即套用繁體中文介面..."
+    "$RUNTIME/node" "$RUNTIME/auto_localize_watcher.js" || true
     /bin/launchctl bootstrap system "$PLIST"
     /bin/launchctl print "system/$LABEL"
     for old_rt in "$BASE"/runtime.*; do
@@ -189,7 +239,8 @@ PLIST_EOF
             /bin/rm -rf "$old_rt" 2>/dev/null || true
         fi
     done
-    echo "🎉 LaunchDaemon 系統級守護服務已成功安裝並啟動！"
+    echo "🎉 繁體中文與系統級背景守護已全部安裝完成！"
+    echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
     echo "日誌路徑：$LOG_DIR/autolocalize.log"
 else
     echo "👤 安裝為使用者級 LaunchAgent 守護服務..."
@@ -257,8 +308,11 @@ PLIST_EOF
     mv "$PLIST_TMP" "$PLIST"
     chmod 644 "$PLIST"
     /bin/launchctl enable "gui/$CURRENT_UID/$LABEL" 2>/dev/null || true
+    echo "🌐 正在立即套用繁體中文介面..."
+    "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js" || true
     /bin/launchctl bootstrap "gui/$CURRENT_UID" "$PLIST"
     /bin/launchctl print "gui/$CURRENT_UID/$LABEL"
-    echo "🎉 LaunchAgent 使用者級守護服務已成功安裝並啟動！"
+    echo "🎉 繁體中文與背景守護已全部安裝完成！"
+    echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
     echo "日誌路徑：$LOG_DIR/autolocalize.log"
 fi
