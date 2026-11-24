@@ -230,6 +230,12 @@ if [ "$IS_DAEMON" -eq 1 ]; then
         /usr/bin/install -o root -g wheel -m 644 "$DIR/.watcher-state/brand_preference.json" "$RUNTIME/.watcher-state/brand_preference.json"
     fi
     
+    DAEMON_EXTRA_WATCH=""
+    if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ] && [ "$ACTUAL_USER" != "loginwindow" ] && [ -d "$REAL_HOME" ]; then
+        DAEMON_EXTRA_WATCH="<string>${REAL_HOME}/Library/Application Support/Antigravity/SingletonLock</string>
+<string>${REAL_HOME}/Library/Application Support/Antigravity IDE/SingletonLock</string>"
+    fi
+
     PLIST_TMP="$(mktemp "$BASE/launchd.XXXXXX")"
     cat > "$PLIST_TMP" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -245,9 +251,10 @@ if [ "$IS_DAEMON" -eq 1 ]; then
 <string>/Applications/Antigravity.app/Contents/Resources/app.asar</string>
 <string>/Applications/Antigravity IDE.app</string>
 <string>/Applications/Antigravity IDE.app/Contents/Resources/app.asar</string>
+${DAEMON_EXTRA_WATCH}
 </array>
-<key>StartInterval</key><integer>300</integer>
-<key>ThrottleInterval</key><integer>30</integer>
+<key>StartInterval</key><integer>604800</integer>
+<key>ThrottleInterval</key><integer>60</integer>
 <key>StandardOutPath</key><string>$LOG_DIR/autolocalize.log</string>
 <key>StandardErrorPath</key><string>$LOG_DIR/autolocalize.log</string>
 </dict></plist>
@@ -375,9 +382,11 @@ else
 <string>$USER_HOME/Applications/Antigravity.app/Contents/Resources/app.asar</string>
 <string>$USER_HOME/Applications/Antigravity IDE.app</string>
 <string>$USER_HOME/Applications/Antigravity IDE.app/Contents/Resources/app.asar</string>
+<string>$USER_HOME/Library/Application Support/Antigravity/SingletonLock</string>
+<string>$USER_HOME/Library/Application Support/Antigravity IDE/SingletonLock</string>
 </array>
-<key>StartInterval</key><integer>300</integer>
-<key>ThrottleInterval</key><integer>30</integer>
+<key>StartInterval</key><integer>604800</integer>
+<key>ThrottleInterval</key><integer>60</integer>
 <key>StandardOutPath</key><string>$LOG_DIR/autolocalize.log</string>
 <key>StandardErrorPath</key><string>$LOG_DIR/autolocalize.log</string>
 </dict></plist>

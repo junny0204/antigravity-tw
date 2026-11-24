@@ -90,31 +90,41 @@ function applyTwGlossary(text, glossary) {
     return out;
 }
 
-function applyPersonalOverrides(dictsTwByFile, overrides) {
-    if (!overrides || typeof overrides !== 'object') return;
-    const termReplacements = overrides.termReplacements && typeof overrides.termReplacements === 'object'
+function compilePersonalOverrides(overrides) {
+    const termReplacements = overrides && overrides.termReplacements && typeof overrides.termReplacements === 'object'
         ? Object.entries(overrides.termReplacements)
             .filter(([k, v]) => typeof k === 'string' && k.length > 0 && typeof v === 'string')
             .sort((a, b) => b[0].length - a[0].length)
         : [];
-    const exactOverrides = overrides.exactOverrides && typeof overrides.exactOverrides === 'object'
+    const exactOverrides = overrides && overrides.exactOverrides && typeof overrides.exactOverrides === 'object'
         ? overrides.exactOverrides
         : {};
+    const allowedTerms = overrides && Array.isArray(overrides.allowForbiddenTerms)
+        ? new Set(overrides.allowForbiddenTerms.filter(t => typeof t === 'string' && t.length > 0))
+        : null;
+    return { termReplacements, exactOverrides, allowedTerms };
+}
 
+function applyPersonalOverrideToValue(key, val, compiled) {
+    if (typeof compiled.exactOverrides[key] === 'string' && compiled.exactOverrides[key].trim() !== '') {
+        return compiled.exactOverrides[key];
+    }
+    let out = val;
+    for (const [from, to] of compiled.termReplacements) {
+        if (typeof out === 'string' && out.includes(from)) {
+            out = out.split(from).join(to);
+        }
+    }
+    return out;
+}
+
+function applyPersonalOverrides(dictsTwByFile, overrides) {
+    if (!overrides || typeof overrides !== 'object') return;
+    const compiled = compilePersonalOverrides(overrides);
     for (const file of Object.keys(dictsTwByFile)) {
         const obj = dictsTwByFile[file];
         for (const key of Object.keys(obj)) {
-            if (typeof exactOverrides[key] === 'string' && exactOverrides[key].trim() !== '') {
-                obj[key] = exactOverrides[key];
-                continue;
-            }
-            let val = obj[key];
-            for (const [from, to] of termReplacements) {
-                if (val.includes(from)) {
-                    val = val.split(from).join(to);
-                }
-            }
-            obj[key] = val;
+            obj[key] = applyPersonalOverrideToValue(key, obj[key], compiled);
         }
     }
 }
@@ -308,7 +318,9 @@ function mergeDictionaries({ qqxpee, atonnyshen, glossary, overrides }) {
         }
     }
 
-    // Pass 2: Net-new entries from qqxpee/antigravity2-cn, normalized with Taiwan glossary rules
+    const compiledOverrides = compilePersonalOverrides(overrides);
+
+    // Pass 2: Net-new entries from qqxpee/antigravity2-cn, normalized with Taiwan glossary + personal overrides
     for (const file of DICT_FILES) {
         const qSc = (qqxpee && qqxpee.dicts && qqxpee.dicts[file]) || {};
         const qTw = (qqxpee && qqxpee.dictsTw && qqxpee.dictsTw[file]) || {};
@@ -320,24 +332,29 @@ function mergeDictionaries({ qqxpee, atonnyshen, glossary, overrides }) {
             const scVal = qSc[key];
             if (typeof scVal !== 'string' || !scVal.trim()) continue;
             const rawTw = typeof qTw[key] === 'string' && qTw[key].trim() ? qTw[key] : scVal;
-            const normalizedTw = applyTwGlossary(rawTw, glossary);
+            const glossaryTw = applyTwGlossary(rawTw, glossary);
+            const candidateTw = applyPersonalOverrideToValue(key, glossaryTw, compiledOverrides);
 
             // Validate before admitting automatically; capture anything that still needs human review
-            const ok = validateTraditionalText(normalizedTw, `sync-candidate ${file}["${key}"]`);
+            const ok = validateTraditionalText(
+                candidateTw,
+                `sync-candidate ${file}["${key}"]`,
+                compiledOverrides.allowedTerms
+            );
             if (!ok) {
-                skippedNeedsReview.push({ file, key, sc: scVal, candidateTw: normalizedTw });
+                skippedNeedsReview.push({ file, key, sc: scVal, candidateTw });
                 continue;
             }
 
             mergedSc[file][key] = scVal;
-            mergedTw[file][key] = normalizedTw;
+            mergedTw[file][key] = candidateTw;
             seenRaw.add(key);
             if (norm) seenNorm.add(norm);
-            addedFromQqxpee.push({ file, key, tw: normalizedTw });
+            addedFromQqxpee.push({ file, key, tw: candidateTw });
         }
     }
 
-    // Pass 3: User's personal terminology overrides (always win)
+    // Pass 3: User's personal terminology overrides (always win across Pass 1 & Pass 2)
     applyPersonalOverrides(mergedTw, overrides);
 
     return { mergedSc, mergedTw, addedFromQqxpee, skippedNeedsReview };
@@ -415,10 +432,12 @@ async function runSync({
             fs.writeFileSync(path.join(tmpDir, 'dicts_tw', file), stringifyStableJson(mergedTw[file]));
         }
         fs.writeFileSync(path.join(tmpDir, 'rules', 'runtime_rules.json'), stringifyStableJson(mergedRules));
+        const compiledOverridesForCheck = compilePersonalOverrides(overrides);
         validationOk = compareDicts(
             path.join(tmpDir, 'dicts'),
             path.join(tmpDir, 'dicts_tw'),
-            path.join(tmpDir, 'rules')
+            path.join(tmpDir, 'rules'),
+            { allowedTerms: compiledOverridesForCheck.allowedTerms }
         );
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });

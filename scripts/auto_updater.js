@@ -545,7 +545,9 @@ function writeJsonAtomically(filePath, obj) {
     }
 }
 
-function adjustUpdateCheckCooldown(cacheFilePath, retryAfterMs = 15 * 60 * 1000, intervalMs = 24 * 60 * 60 * 1000) {
+const DEFAULT_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function adjustUpdateCheckCooldown(cacheFilePath, retryAfterMs = 15 * 60 * 1000, intervalMs = DEFAULT_CHECK_INTERVAL_MS) {
     if (!cacheFilePath || !fs.existsSync(cacheFilePath)) return false;
     try {
         const current = JSON.parse(fs.readFileSync(cacheFilePath, 'utf8'));
@@ -582,56 +584,83 @@ function pruneOldTranslationPacks(baseDir, keepVersions = []) {
     return removed;
 }
 
+function sleepAsync(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function checkUpdate({
     repo = loadRepoConfig().repo,
     currentVersion = '',
     cacheFilePath = '',
-    intervalMs = 24 * 60 * 60 * 1000,
+    intervalMs = DEFAULT_CHECK_INTERVAL_MS,
     force = false,
+    forceOnReboot = true,
+    uptimeSec = os.uptime(),
+    nowMs = Date.now(),
+    bootRetryCount = 2,
+    bootRetryDelayMs = 5000,
     silentNotification = false,
     apiUrl = null
 } = {}) {
     if (!force && cacheFilePath && fs.existsSync(cacheFilePath)) {
         try {
             const cache = JSON.parse(fs.readFileSync(cacheFilePath, 'utf8'));
-            if (cache.lastChecked && (Date.now() - cache.lastChecked < intervalMs)) {
+            const bootTimeMs = nowMs - Math.floor(Math.max(0, Number(uptimeSec) || 0) * 1000);
+            const rebootedSinceCheck = Boolean(
+                forceOnReboot &&
+                !cache.retryScheduled &&
+                Number.isFinite(cache.lastChecked) &&
+                (cache.lastChecked + 5000 < bootTimeMs)
+            );
+            if (!rebootedSinceCheck && cache.lastChecked && (nowMs - cache.lastChecked < intervalMs)) {
                 return { skipped: true, reason: 'within_interval', cache };
             }
         } catch {}
     }
 
-    try {
-        const release = await fetchLatestRelease(repo, 6000, apiUrl);
-        const remoteVersion = release.tag.replace(/^v/, '');
-        const hasUpdate = compareVersions(remoteVersion, currentVersion) > 0;
+    const maxAttempts = (Number(uptimeSec) >= 0 && Number(uptimeSec) < 180 && bootRetryCount > 0)
+        ? 1 + bootRetryCount
+        : 1;
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const release = await fetchLatestRelease(repo, 6000, apiUrl);
+            const remoteVersion = release.tag.replace(/^v/, '');
+            const hasUpdate = compareVersions(remoteVersion, currentVersion) > 0;
 
-        const result = {
-            hasUpdate,
-            currentVersion,
-            remoteVersion,
-            tag: release.tag,
-            htmlUrl: release.htmlUrl,
-            lastChecked: Date.now()
-        };
+            const result = {
+                hasUpdate,
+                currentVersion,
+                remoteVersion,
+                tag: release.tag,
+                htmlUrl: release.htmlUrl,
+                lastChecked: Date.now()
+            };
 
-        if (cacheFilePath) {
-            try {
-                writeJsonAtomically(cacheFilePath, result);
-            } catch {}
+            if (cacheFilePath) {
+                try {
+                    writeJsonAtomically(cacheFilePath, result);
+                } catch {}
+            }
+
+            if (hasUpdate && !silentNotification) {
+                notifyMac('Antigravity 繁體中文化更新', `發現新版本 ${release.tag}，包含最新字典與修復。`);
+            }
+
+            return { ...result, release };
+        } catch (e) {
+            lastError = e;
+            const nonRetryable = /Blocked untrusted|Blocked release API/i.test(String(e && e.message || ''));
+            if (nonRetryable || attempt >= maxAttempts) break;
+            await sleepAsync(bootRetryDelayMs * attempt);
         }
-
-        if (hasUpdate && !silentNotification) {
-            notifyMac('Antigravity 繁體中文化更新', `發現新版本 ${release.tag}，包含最新字典與修復。`);
-        }
-
-        return { ...result, release };
-    } catch (e) {
-        return { hasUpdate: false, error: e.message, lastChecked: Date.now() };
     }
+    return { hasUpdate: false, error: lastError ? lastError.message : 'Unknown error', lastChecked: Date.now() };
 }
 
 module.exports = {
     ALLOWED_DOWNLOAD_HOSTS,
+    DEFAULT_CHECK_INTERVAL_MS,
     compareVersions,
     isAllowedAssetUrl,
     selectTranslationAsset,

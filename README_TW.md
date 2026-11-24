@@ -8,9 +8,9 @@
 
 1. **原版 App 直接變繁中**：修改本機 `resources/app.asar` 並自動備份 `app.asar.bak`，不會多出第二個 App，也不影響登入狀態、專案與對話紀錄；隨時可一鍵還原官方英文。
 2. **執行期零外部依賴**：安裝與常駐核心皆為純 Node.js（需求 Node.js `>= 22.12.0`），執行期無須 `npm install`。
-3. **跨平台背景常駐更新（Windows & macOS）**：
-   - **每 5 分鐘**：檢查 Antigravity 官方是否自動更新，若被覆蓋為英文則自動重套繁體中文（Windows 採 `ReplaceFileW`、macOS 採 `renamex_np` 原子交換＋本機 ad-hoc 簽章）。
-   - **每 24 小時**：僅連線至 **本倉庫（`junny0204/antigravity-tw`）** 檢查新版純翻譯資料包，強制驗證 SHA-256 與詞庫安全規則後自動套用（**絕不自動下載執行遠端程式碼**）。
+3. **跨平台低擾動背景守護（Windows & macOS）**：
+   - **開機登入與每週自動檢查（取代高頻輪詢）**：電腦重開機登入後強制檢查一次（確保開機使用時就是最新狀態），平時改為**每週一次**背景巡檢（Windows 採 `ReplaceFileW` 單步原子置換＋失敗 15 分鐘重試；macOS 採 `renamex_np` 原子交換＋`Info.plist` 校驗同步＋本機 ad-hoc 簽章，並透過零耗電 `WatchPaths` 在官方更新與開啟 Antigravity 時即時觸發）。
+   - **純翻譯資料自動更新**：僅連線至 **本倉庫（`junny0204/antigravity-tw`）** 檢查新版純翻譯資料包（每週定期檢查，重開機或 macOS 開啟 App 時亦會強制核對），強制驗證 SHA-256 與詞庫安全規則後自動套用（**絕不自動下載執行遠端程式碼**）。
 4. **上游自動同步流水線（GitHub Actions）**：
    - 每日自動比對 `qqxpee/antigravity2-cn` 與 `atonnyshen/antigravity2-TW` 更新。
    - 透過 `config/tw_glossary.json` 自動將新詞條轉換為台灣用語，並套用你的 `config/tw_overrides.json` 個人覆蓋設定。

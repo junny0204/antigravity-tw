@@ -6,7 +6,10 @@ if (args.length < 2) {
     WScript.Quit(2);
 }
 function quoteArg(val) {
-    return '"' + String(val).replace(/"/g, '\\"') + '"';
+    var str = String(val);
+    // Win32 CommandLineToArgvW: double backslashes before a quote or end-of-arg
+    var escaped = str.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1');
+    return '"' + escaped + '"';
 }
 var parts = [];
 for (var i = 0; i < args.length; i++) {

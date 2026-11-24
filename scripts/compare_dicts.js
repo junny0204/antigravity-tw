@@ -78,24 +78,36 @@ function normalizeText(text) {
                .replace(/…/g, '...');
 }
 
-function loadAllowedForbiddenTerms() {
-    const overridesPath = path.join(__dirname, '../config/tw_overrides.json');
+const _allowedTermsCache = new Map();
+
+function loadAllowedForbiddenTerms(overridesPath = path.join(__dirname, '../config/tw_overrides.json')) {
+    const resolved = path.resolve(overridesPath);
     try {
-        if (!fs.existsSync(overridesPath)) return new Set();
-        const data = JSON.parse(fs.readFileSync(overridesPath, 'utf8'));
-        if (data && Array.isArray(data.allowForbiddenTerms)) {
-            return new Set(data.allowForbiddenTerms.filter(t => typeof t === 'string' && t.length > 0));
+        if (!fs.existsSync(resolved)) {
+            _allowedTermsCache.delete(resolved);
+            return new Set();
         }
+        const st = fs.statSync(resolved);
+        const cached = _allowedTermsCache.get(resolved);
+        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+            return cached.terms;
+        }
+        const data = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+        const terms = data && Array.isArray(data.allowForbiddenTerms)
+            ? new Set(data.allowForbiddenTerms.filter(t => typeof t === 'string' && t.length > 0))
+            : new Set();
+        _allowedTermsCache.set(resolved, { mtimeMs: st.mtimeMs, size: st.size, terms });
+        return terms;
     } catch {}
     return new Set();
 }
 
-function validateTraditionalText(tcVal, label) {
+function validateTraditionalText(tcVal, label, allowedTerms = null) {
     if (typeof tcVal !== 'string' || tcVal.trim() === '') {
         console.error(`Error in ${label}: empty or non-string value.`);
         return false;
     }
-    const allowedTerms = loadAllowedForbiddenTerms();
+    const resolvedAllowed = allowedTerms instanceof Set ? allowedTerms : loadAllowedForbiddenTerms();
     let ok = true;
     const scMatch = tcVal.match(STRICT_SC_CHARS_REGEX);
     if (scMatch) {
@@ -103,7 +115,7 @@ function validateTraditionalText(tcVal, label) {
         ok = false;
     }
     for (const term of FORBIDDEN_TC_TERMS) {
-        if (allowedTerms.has(term)) continue;
+        if (resolvedAllowed.has(term)) continue;
         if (tcVal.includes(term)) {
             console.error(`Error in ${label}: contains forbidden term "${term}" in value: ${tcVal}`);
             ok = false;
@@ -118,8 +130,9 @@ function validateTraditionalText(tcVal, label) {
     return ok;
 }
 
-function compareRules(targetRulesDir) {
+function compareRules(targetRulesDir, allowedTerms = null) {
     if (!targetRulesDir || !fs.existsSync(targetRulesDir)) return true;
+    const resolvedAllowed = allowedTerms instanceof Set ? allowedTerms : loadAllowedForbiddenTerms();
     let hasError = false;
     const jsonFiles = fs.readdirSync(targetRulesDir).filter(f => f.endsWith('.json')).sort();
     for (const file of jsonFiles) {
@@ -130,7 +143,7 @@ function compareRules(targetRulesDir) {
             if (parsed.scopedMaps) {
                 for (const [scopeName, entries] of Object.entries(parsed.scopedMaps)) {
                     for (const [key, pair] of Object.entries(entries)) {
-                        if (!validateTraditionalText(pair.tw, `rules/${file}: scopedMaps.${scopeName}["${key}"].tw`)) {
+                        if (!validateTraditionalText(pair.tw, `rules/${file}: scopedMaps.${scopeName}["${key}"].tw`, resolvedAllowed)) {
                             hasError = true;
                         }
                     }
@@ -138,7 +151,7 @@ function compareRules(targetRulesDir) {
             }
             for (const section of ['dynamicRules', 'attrDynamicRules']) {
                 for (const rule of (parsed[section] || [])) {
-                    if (!validateTraditionalText(rule.tw, `rules/${file}: ${section}[${rule.id}].tw`)) {
+                    if (!validateTraditionalText(rule.tw, `rules/${file}: ${section}[${rule.id}].tw`, resolvedAllowed)) {
                         hasError = true;
                     }
                 }
@@ -151,8 +164,11 @@ function compareRules(targetRulesDir) {
     return !hasError;
 }
 
-function compareDicts(targetDictsDir = dictsDir, targetDictsTwDir = dictsTwDir, targetRulesDir = rulesDir) {
+function compareDicts(targetDictsDir = dictsDir, targetDictsTwDir = dictsTwDir, targetRulesDir = rulesDir, options = {}) {
     let hasError = false;
+    const allowedTerms = options && options.allowedTerms instanceof Set
+        ? options.allowedTerms
+        : loadAllowedForbiddenTerms();
     
     if (!fs.existsSync(targetDictsDir) || !fs.existsSync(targetDictsTwDir)) {
         console.error('Error: dicts or dicts_tw directory does not exist.');
@@ -247,7 +263,7 @@ function compareDicts(targetDictsDir = dictsDir, targetDictsTwDir = dictsTwDir, 
                     console.error(`Error in dicts_tw/${file}: Key "${key}" has empty or non-string value.`);
                     hasError = true;
                 } else {
-                    if (!validateTraditionalText(tcVal, `dicts_tw/${file} key "${key}"`)) {
+                    if (!validateTraditionalText(tcVal, `dicts_tw/${file} key "${key}"`, allowedTerms)) {
                         hasError = true;
                     }
                 }
@@ -260,7 +276,7 @@ function compareDicts(targetDictsDir = dictsDir, targetDictsTwDir = dictsTwDir, 
 
     const inferredRulesDir = targetRulesDir || path.join(path.dirname(targetDictsDir), 'rules');
     if (fs.existsSync(inferredRulesDir)) {
-        if (!compareRules(inferredRulesDir)) {
+        if (!compareRules(inferredRulesDir, allowedTerms)) {
             hasError = true;
         }
     }

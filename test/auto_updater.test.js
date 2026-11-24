@@ -75,3 +75,53 @@ test('adjustUpdateCheckCooldown shortens 24h lockout to 15m retry window and pru
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
+
+test('checkUpdate forces one check after OS reboot but preserves 15m retryScheduled cooldown', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'updater-reboot-'));
+    try {
+        const cacheFile = path.join(tmpDir, 'update_check.json');
+        const now = Date.now();
+        const weekly = 7 * 24 * 60 * 60 * 1000;
+
+        // Checked 2 hours ago, but machine booted 1 hour ago -> must bypass 7-day cache!
+        fs.writeFileSync(cacheFile, JSON.stringify({ hasUpdate: false, lastChecked: now - 2 * 60 * 60 * 1000 }));
+        const afterReboot = await checkUpdate({
+            currentVersion: '1.0.4',
+            cacheFilePath: cacheFile,
+            intervalMs: weekly,
+            uptimeSec: 3600,
+            nowMs: now,
+            bootRetryCount: 0,
+            apiUrl: 'http://blocked.invalid/test'
+        });
+        assert.equal(Boolean(afterReboot.skipped), false, 'reboot after lastChecked must bypass weekly cache');
+
+        // Checked 30 minutes ago, machine booted 2 hours ago -> still within 7-day cache, must skip
+        fs.writeFileSync(cacheFile, JSON.stringify({ hasUpdate: false, lastChecked: now - 30 * 60 * 1000 }));
+        const sameBoot = await checkUpdate({
+            currentVersion: '1.0.4',
+            cacheFilePath: cacheFile,
+            intervalMs: weekly,
+            uptimeSec: 7200,
+            nowMs: now
+        });
+        assert.equal(sameBoot.skipped, true);
+
+        // retryScheduled cache (e.g. 15m backoff) must NOT be bypassed even when uptime is tiny (CI VM / fresh boot)
+        fs.writeFileSync(cacheFile, JSON.stringify({
+            hasUpdate: true,
+            retryScheduled: true,
+            lastChecked: now - weekly + 10 * 60 * 1000
+        }));
+        const retryStillCooling = await checkUpdate({
+            currentVersion: '1.0.4',
+            cacheFilePath: cacheFile,
+            intervalMs: weekly,
+            uptimeSec: 20,
+            nowMs: now
+        });
+        assert.equal(retryStillCooling.skipped, true, 'retryScheduled must not be bypassed by bootTimeMs');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});

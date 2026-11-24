@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { checkAndLocalizeApp, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash } = require('../auto_localize_watcher');
+const { checkAndLocalizeApp, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash, rotateLogFileInPlace, detectRecentAppLaunchTrigger, refreshTranslationsAndReapply } = require('../auto_localize_watcher');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-watcher-'));
@@ -823,6 +823,86 @@ test('watcher preserves user brandTitle preference across official updates', t =
         }
     }), true);
     assert.deepEqual(seenBrands, ['hidden', 'hidden']);
+});
+
+test('rotateLogFileInPlace preserves inode and aligns UTF-8 Traditional Chinese lines cleanly', t => {
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-log-rot-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const logPath = path.join(root, 'autolocalize.log');
+    const line = '[2026-11-24T00:00:00.000Z] 已是目前版本的繁中套件，略過。\n';
+    fs.writeFileSync(logPath, line.repeat(400), 'utf8');
+    const beforeStat = fs.statSync(logPath);
+    assert.equal(rotateLogFileInPlace(logPath, 4096, 2048), true);
+    const afterStat = fs.statSync(logPath);
+    assert.equal(afterStat.ino, beforeStat.ino, 'in-place rotation must preserve inode for launchd fd');
+    assert.ok(afterStat.size <= 2048 && afterStat.size > 0);
+    const text = fs.readFileSync(logPath, 'utf8');
+    assert.equal(text.includes('\uFFFD'), false, 'UTF-8 multi-byte characters must never be split');
+    assert.ok(text.startsWith('[2026-11-24T'), 'rotated log must start cleanly at a newline boundary');
+});
+
+test('detectRecentAppLaunchTrigger uses lstatSync on SingletonLock and respects anti-storm and retryScheduled guards', t => {
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-launch-trig-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const cacheFile = path.join(root, 'update_check.json');
+    const appSupport = path.join(root, 'Antigravity');
+    fs.mkdirSync(appSupport, { recursive: true });
+    const lockPath = path.join(appSupport, 'SingletonLock');
+    if (process.platform === 'win32') {
+        fs.writeFileSync(lockPath, 'host-1234');
+    } else {
+        // Real Electron on macOS creates a dangling symlink pointing to host-pid
+        fs.symlinkSync('TestMac.local-99999', lockPath);
+    }
+    const lockMtime = fs.lstatSync(lockPath).mtimeMs;
+    const now = lockMtime + 5000;
+
+    // 1. Checked 45m before SingletonLock was touched -> must trigger forced check!
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: lockMtime - 45 * 60 * 1000 }));
+    assert.equal(detectRecentAppLaunchTrigger({ cacheFile, appSupportDirs: [appSupport], nowMs: now }), true);
+
+    // 2. Checked only 5m ago -> blocked by 30m anti-storm guard
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: lockMtime - 5 * 60 * 1000 }));
+    assert.equal(detectRecentAppLaunchTrigger({ cacheFile, appSupportDirs: [appSupport], nowMs: now }), false);
+
+    // 3. retryScheduled is true -> never bypass 15m failure cooldown
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: lockMtime - 45 * 60 * 1000, retryScheduled: true }));
+    assert.equal(detectRecentAppLaunchTrigger({ cacheFile, appSupportDirs: [appSupport], nowMs: now }), false);
+});
+
+test('refreshTranslationsAndReapply schedules short retry when blocked by run.lock', async t => {
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-lock-retry-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const stateDir = path.join(root, '.watcher-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const prevEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    t.after(() => {
+        if (prevEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prevEnv;
+    });
+
+    let cooldownCalledWith = null;
+    const release = acquireLock(path.join(stateDir, 'run.lock'));
+    try {
+        const res = await refreshTranslationsAndReapply({
+            targetDir: root,
+            stateDir,
+            currentVersion: '1.0.4',
+            updater: {
+                readActiveTranslation: () => null,
+                checkUpdate: async () => ({ hasUpdate: true, tag: 'v1.0.5', release: { tag: 'v1.0.5', assets: [] } }),
+                installTranslationUpdate: async () => { throw new Error('Should not run while locked'); },
+                adjustUpdateCheckCooldown: (file, retryMs, intMs) => { cooldownCalledWith = { file, retryMs, intMs }; }
+            }
+        });
+        assert.equal(res.reason, 'locked');
+        assert.ok(cooldownCalledWith, 'locked run must schedule short retry cooldown instead of 7-day lockout');
+        assert.equal(cooldownCalledWith.retryMs, 15 * 60 * 1000);
+        assert.equal(cooldownCalledWith.intMs, 7 * 24 * 60 * 60 * 1000);
+    } finally {
+        release();
+    }
 });
 
 

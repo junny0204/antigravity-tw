@@ -118,7 +118,7 @@ jobs:
           - Upstream \`qqxpee/antigravity2-cn\`: \`${QQ_SHA}\`
           - Upstream \`atonnyshen/antigravity2-TW\`: \`${AT_SHA}\`
           - 相容核心引擎版本：\`${MIN_ENGINE}\` ~ \`${MAX_ENGINE}\`
-          - 僅含純翻譯資料包（\`${ASSET_PREFIX}-${TAG}.zip\`），Windows / macOS 背景守護將於 24 小時內驗證 SHA-256 後自動套用。"
+          - 僅含純翻譯資料包（\`${ASSET_PREFIX}-${TAG}.zip\`），Windows / macOS 背景守護將於開機登入或每週排程驗證 SHA-256 後自動套用。"
 
           mkdir -p "$RUNNER_TEMP/preflight"
           for attempt in 1 2 3 4 5; do

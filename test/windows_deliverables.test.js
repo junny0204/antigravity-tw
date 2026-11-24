@@ -185,7 +185,9 @@ test('watcher Windows Task Scheduler XML installer/uninstaller handles spaces, C
     assert.ok(writtenXmlBuf && writtenXmlBuf[0] === 0xff && writtenXmlBuf[1] === 0xfe, 'XML must have UTF-16LE BOM for schtasks /XML');
     const decodedXml = writtenXmlBuf.slice(2).toString('utf16le');
     assert.match(decodedXml, /^<\?xml version="1\.0" encoding="UTF-16"\?>\r\n/);
-    assert.match(decodedXml, /<Interval>PT5M<\/Interval>/);
+    assert.match(decodedXml, /<CalendarTrigger>\r\n\s+<StartBoundary>2026-01-05T09:00:00<\/StartBoundary>\r\n\s+<Enabled>true<\/Enabled>\r\n\s+<ScheduleByWeek>/);
+    assert.match(decodedXml, /<DaysOfWeek>\r\n\s+<Monday \/>\r\n\s+<\/DaysOfWeek>\r\n\s+<WeeksInterval>1<\/WeeksInterval>/);
+    assert.match(decodedXml, /<RestartOnFailure>\r\n\s+<Interval>PT15M<\/Interval>\r\n\s+<Count>3<\/Count>\r\n\s+<\/RestartOnFailure>/);
     assert.match(decodedXml, /<LogonType>InteractiveToken<\/LogonType>/);
     assert.match(decodedXml, /<RunLevel>LeastPrivilege<\/RunLevel>/, 'Persistent tasks must not run elevated code from a writable checkout');
     assert.match(decodedXml, /<Command>.*\\System32\\wscript\.exe<\/Command>/i);

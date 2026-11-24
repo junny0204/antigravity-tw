@@ -208,3 +208,22 @@ test('bumpPatchSemver and diffEngineHashes work cleanly', () => {
         ['src/main_patches.js']
     );
 });
+
+test('mergeDictionaries applies personal overrides and allowForbiddenTerms BEFORE Pass 2 validation', () => {
+    const res = mergeDictionaries({
+        atonnyshen: { dicts: { 'common.json': {} }, dictsTw: { 'common.json': {} } },
+        qqxpee: {
+            dicts: { 'common.json': { 'GPU Renderer': 'GPU 渲染器', 'Custom Widget': '自定义小部件' } },
+            dictsTw: { 'common.json': { 'GPU Renderer': 'GPU 算繪器', 'Custom Widget': '自定義小部件' } }
+        },
+        glossary: { exactReplacements: [], regexReplacements: [] },
+        overrides: {
+            allowForbiddenTerms: ['渲染'],
+            termReplacements: { '算繪': '渲染' },
+            exactOverrides: { 'Custom Widget': '自訂元件' }
+        }
+    });
+    assert.equal(res.skippedNeedsReview.length, 0, 'personal overrides must rescue candidates before validation');
+    assert.equal(res.mergedTw['common.json']['GPU Renderer'], 'GPU 渲染器');
+    assert.equal(res.mergedTw['common.json']['Custom Widget'], '自訂元件');
+});

@@ -35,6 +35,46 @@ function stripQuarantineRecursive(target) {
     } catch {}
 }
 
+const WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const APP_LAUNCH_MIN_RECHECK_MS = 30 * 60 * 1000;
+const MAX_LOG_BYTES = 512 * 1024;
+const KEEP_LOG_BYTES = 256 * 1024;
+
+function rotateLogFileInPlace(filePath, maxBytes = MAX_LOG_BYTES, keepBytes = KEEP_LOG_BYTES) {
+    try {
+        if (!filePath || !fs.existsSync(filePath)) return false;
+        const st = fs.lstatSync(filePath);
+        if (st.isSymbolicLink() || !st.isFile() || st.size <= maxBytes) return false;
+        const readLen = Math.min(st.size, keepBytes);
+        const startOffset = st.size - readLen;
+        const fd = fs.openSync(filePath, 'r+');
+        try {
+            const buf = Buffer.alloc(readLen);
+            fs.readSync(fd, buf, 0, readLen, startOffset);
+            const firstNl = buf.indexOf(0x0a);
+            const tail = firstNl !== -1 && firstNl + 1 < buf.length ? buf.subarray(firstNl + 1) : buf;
+            fs.writeSync(fd, tail, 0, tail.length, 0);
+            fs.ftruncateSync(fd, tail.length);
+            return true;
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch {
+        return false;
+    }
+}
+
+function rotateKnownLogs() {
+    const candidates = [path.join(DIR, 'autolocalize.log')];
+    if (IS_MAC) {
+        candidates.push('/Library/Logs/Antigravity2TW/autolocalize.log');
+        candidates.push(path.join(os.homedir(), 'Library', 'Logs', 'Antigravity2TW', 'autolocalize.log'));
+    }
+    for (const lp of candidates) {
+        rotateLogFileInPlace(lp);
+    }
+}
+
 function log(message) {
     const line = '[' + new Date().toISOString() + '] ' + message;
     console.log(line);
@@ -61,6 +101,7 @@ function log(message) {
     }
     for (const lp of logPaths) {
         try {
+            rotateLogFileInPlace(lp);
             fs.appendFileSync(lp, line + '\n');
             fs.chmodSync(lp, 0o644);
         } catch {}
@@ -750,6 +791,27 @@ function buildArchive(stageDir, brandTitle = 'english') {
     ], { cwd: DIR, stdio: 'pipe', timeout: 180000, windowsHide: true });
 }
 
+function writePlistAtomically(plistPath, bytes, stat) {
+    ensureRegularTarget(plistPath);
+    const parentDir = path.dirname(plistPath);
+    const tmpPlist = path.join(parentDir, `.ag-plist-${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    const targetMode = stat ? (stat.mode & 0o777) : 0o644;
+    const uid = stat ? stat.uid : null;
+    const gid = stat ? stat.gid : null;
+    try {
+        // Use writable mode (0o600) on temp file so fsyncFile ('r+' on win32) succeeds even if original mode was read-only.
+        fs.writeFileSync(tmpPlist, bytes, { mode: 0o600, flag: 'wx' });
+        fsyncFile(tmpPlist);
+        if (ROOT && uid != null && gid != null) {
+            try { fs.chownSync(tmpPlist, uid, gid); } catch {}
+        }
+        safeReplaceFile(tmpPlist, plistPath, targetMode, uid, gid, { atomicRequired: true });
+        fsyncDirectory(parentDir);
+    } finally {
+        try { fs.rmSync(tmpPlist, { force: true }); } catch {}
+    }
+}
+
 function syncMacPlistAsarIntegrity(appPath, asarPath) {
     if (!appPath || !asarPath) return false;
     const plistPath = path.join(appPath, 'Contents', 'Info.plist');
@@ -767,9 +829,7 @@ function syncMacPlistAsarIntegrity(appPath, asarPath) {
     if (!integrityRegex.test(plistContent)) return false;
     const updatedPlist = plistContent.replace(integrityRegex, `$1${headerHash}$2`);
     if (updatedPlist === plistContent) return false;
-    const tmpPlist = path.join(os.tmpdir(), `ag_plist_${process.pid}_${crypto.randomBytes(4).toString('hex')}.plist`);
-    fs.writeFileSync(tmpPlist, updatedPlist, { mode: plistStat.mode & 0o777, flag: 'wx' });
-    safeReplaceFile(tmpPlist, plistPath, plistStat.mode, plistStat.uid, plistStat.gid);
+    writePlistAtomically(plistPath, updatedPlist, plistStat);
     return true;
 }
 
@@ -1015,12 +1075,7 @@ function checkAndLocalizeApp(appInfo, {
                     try { fs.rmSync(rollbackDir, { recursive: true, force: true }); } catch {}
                 }
                 if (plistModified && originalPlistBytes) {
-                    try {
-                        const tmpRestorePlist = path.join(os.tmpdir(), `ag_plist_rb_${process.pid}_${crypto.randomBytes(4).toString('hex')}.plist`);
-                        const pMode = originalPlistStat ? (originalPlistStat.mode & 0o777) : 0o644;
-                        fs.writeFileSync(tmpRestorePlist, originalPlistBytes, { mode: pMode, flag: 'wx' });
-                        safeReplaceFile(tmpRestorePlist, plistPath, pMode, originalPlistStat && originalPlistStat.uid, originalPlistStat && originalPlistStat.gid);
-                    } catch {}
+                    writePlistAtomically(plistPath, originalPlistBytes, originalPlistStat);
                 }
                 sign(appPath, sourceStat);
                 log('套用未通過，已還原原始 app.asar。');
@@ -1127,17 +1182,19 @@ function buildWindowsTaskXml({
         '<?xml version="1.0" encoding="UTF-16"?>',
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
         '  <RegistrationInfo>',
-        '    <Description>Antigravity 2.0 繁體中文自動更新守護 (每 5 分鐘檢查並重套中文化)</Description>',
+        '    <Description>Antigravity 2.0 繁體中文自動更新守護 (開機登入與每週自動檢查重套中文化)</Description>',
         '  </RegistrationInfo>',
         '  <Triggers>',
-        '    <TimeTrigger>',
-        '      <Repetition>',
-        '        <Interval>PT5M</Interval>',
-        '        <StopAtDurationEnd>false</StopAtDurationEnd>',
-        '      </Repetition>',
-        '      <StartBoundary>2026-01-01T00:00:00</StartBoundary>',
+        '    <CalendarTrigger>',
+        '      <StartBoundary>2026-01-05T09:00:00</StartBoundary>',
         '      <Enabled>true</Enabled>',
-        '    </TimeTrigger>',
+        '      <ScheduleByWeek>',
+        '        <DaysOfWeek>',
+        '          <Monday />',
+        '        </DaysOfWeek>',
+        '        <WeeksInterval>1</WeeksInterval>',
+        '      </ScheduleByWeek>',
+        '    </CalendarTrigger>',
         '    <LogonTrigger>',
         '      <Enabled>true</Enabled>',
         ...(logonUserLine ? [logonUserLine] : []),
@@ -1161,6 +1218,10 @@ function buildWindowsTaskXml({
         '    <Enabled>true</Enabled>',
         '    <Hidden>false</Hidden>',
         '    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>',
+        '    <RestartOnFailure>',
+        '      <Interval>PT15M</Interval>',
+        '      <Count>3</Count>',
+        '    </RestartOnFailure>',
         '  </Settings>',
         '  <Actions Context="Author">',
         '    <Exec>',
@@ -1206,7 +1267,7 @@ function installWindowsTask(options = {}) {
     console.log('=======================================================');
     console.log('  安裝 Antigravity 背景自動更新守護 (Windows 工作排程)');
     console.log('=======================================================');
-    console.log(`[1/2] 正在註冊 Windows 工作排程 (${taskName})，每 5 分鐘自動檢查一次...`);
+    console.log(`[1/2] 正在註冊 Windows 工作排程 (${taskName})，於開機登入與每週自動檢查一次...`);
     try {
         fs.writeFileSync(xmlPath, encodeUtf16LeWithBom(xmlText));
         if (typeof options.onXmlWritten === 'function') {
@@ -1227,7 +1288,7 @@ function installWindowsTask(options = {}) {
         firstRunWarning = err.message;
     }
     if (firstRunWarning) {
-        console.log(`[提示] 排程已註冊完成；立即觸發回報（${firstRunWarning}），將在 5 分鐘內自動巡檢套用。`);
+        console.log(`[提示] 排程已註冊完成；立即觸發回報（${firstRunWarning}），將於下次開機登入或每週排程自動巡檢套用。`);
     }
     console.log('\n[完成] Windows 背景自動更新守護已啟動！');
     console.log(`工作名稱：${taskName}`);
@@ -1270,6 +1331,60 @@ function uninstallWindowsTask(options = {}) {
     return { taskName, existed, deleted };
 }
 
+function getMacAppSupportDirs() {
+    const dirs = [];
+    const homes = new Set([os.homedir()]);
+    if (IS_MAC && ROOT) {
+        try {
+            const consoleUser = execFileSync('/usr/bin/stat', ['-f%Su', '/dev/console'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+            if (consoleUser && consoleUser !== 'root' && consoleUser !== 'loginwindow') {
+                const dsclOut = execFileSync('/usr/bin/dscl', ['.', '-read', `/Users/${consoleUser}`, 'NFSHomeDirectory'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+                const m = dsclOut.match(/^NFSHomeDirectory:\s*(.+)$/m);
+                homes.add(m && m[1] ? m[1].trim() : path.join('/Users', consoleUser));
+            }
+        } catch {}
+    }
+    for (const h of homes) {
+        dirs.push(
+            path.join(h, 'Library', 'Application Support', 'Antigravity'),
+            path.join(h, 'Library', 'Application Support', 'Antigravity IDE')
+        );
+    }
+    return dirs;
+}
+
+function detectRecentAppLaunchTrigger({
+    cacheFile,
+    appSupportDirs = IS_MAC ? getMacAppSupportDirs() : [],
+    minRecheckMs = APP_LAUNCH_MIN_RECHECK_MS,
+    nowMs = Date.now()
+} = {}) {
+    if (!cacheFile || !Array.isArray(appSupportDirs) || appSupportDirs.length === 0) return false;
+    let cache = null;
+    try {
+        if (fs.existsSync(cacheFile)) {
+            cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        }
+    } catch {}
+    if (!cache || !Number.isFinite(cache.lastChecked)) return false;
+    // Never bypass a failure-retry backoff window
+    if (cache.retryScheduled) return false;
+    if (nowMs - cache.lastChecked < minRecheckMs) return false;
+
+    for (const dir of appSupportDirs) {
+        const lockFile = path.join(dir, 'SingletonLock');
+        try {
+            // Electron creates SingletonLock on macOS as a dangling symlink (hostname-pid);
+            // must use lstatSync because existsSync/statSync return false/ENOENT.
+            const st = fs.lstatSync(lockFile);
+            if (Number.isFinite(st.mtimeMs) && st.mtimeMs > cache.lastChecked) {
+                return true;
+            }
+        } catch {}
+    }
+    return false;
+}
+
 async function refreshTranslationsAndReapply({
     targetDir = DIR,
     stateDir = ensureAccessibleDir(path.join(targetDir, '.watcher-state')),
@@ -1291,6 +1406,7 @@ async function refreshTranslationsAndReapply({
         const meta = extractLocalizationMeta(archive);
         return isLocalized(archive) && meta && meta.translationVersion === version;
     },
+    isAsarBusyFn = null,
     updaterOptions = {}
 } = {}) {
     if (!updater || typeof updater.checkUpdate !== 'function') return { updated: false, reason: 'no_updater' };
@@ -1301,10 +1417,15 @@ async function refreshTranslationsAndReapply({
         ? updater.readActiveTranslation(targetDir) : null;
     const installedTranslationVersion = active ? active.version : currentVersion;
     const cacheFile = path.join(stateDir, 'update_check.json');
+    const intervalMs = Number.isFinite(updaterOptions.intervalMs) ? updaterOptions.intervalMs : WEEKLY_INTERVAL_MS;
+    const launchedSinceCheck = updaterOptions.force === undefined && IS_MAC
+        ? detectRecentAppLaunchTrigger({ cacheFile })
+        : false;
     const res = await updater.checkUpdate({
         currentVersion: installedTranslationVersion,
         cacheFilePath: cacheFile,
-        intervalMs: 24 * 60 * 60 * 1000,
+        intervalMs,
+        force: launchedSinceCheck,
         silentNotification: true,
         ...updaterOptions
     });
@@ -1319,15 +1440,27 @@ async function refreshTranslationsAndReapply({
     if (typeof updater.installTranslationUpdate !== 'function' || !res.release) {
         return { updated: false, reason: 'no_translation_updater', checkResult: res };
     }
-    const releaseLock = acquireLock(path.join(stateDir, 'run.lock'));
-    if (!releaseLock) {
-        return { updated: false, reason: 'locked' };
-    }
     const scheduleShortRetry = () => {
         if (typeof updater.adjustUpdateCheckCooldown === 'function') {
-            updater.adjustUpdateCheckCooldown(cacheFile, 15 * 60 * 1000);
+            updater.adjustUpdateCheckCooldown(cacheFile, 15 * 60 * 1000, intervalMs);
         }
     };
+    const asarBusy = typeof isAsarBusyFn === 'function'
+        ? Boolean(isAsarBusyFn())
+        : (process.platform === 'win32' && updater === autoUpdater && (() => {
+            const info = getAppInfo();
+            return Boolean(info && isWindowsAsarBusyForAtomicSwap(info.asarPath));
+        })());
+    if (asarBusy) {
+        scheduleShortRetry();
+        log(`偵測到新版翻譯 ${res.tag}，但 Antigravity 正在執行並鎖定 app.asar，已排定 15 分鐘後重試套用。`);
+        return { updated: false, reason: 'asar_busy', checkResult: res };
+    }
+    const releaseLock = acquireLock(path.join(stateDir, 'run.lock'));
+    if (!releaseLock) {
+        scheduleShortRetry();
+        return { updated: false, reason: 'locked' };
+    }
     let updateRes;
     try {
         updateRes = await updater.installTranslationUpdate({
@@ -1448,22 +1581,41 @@ async function main() {
     }
 
     try {
+        rotateKnownLogs();
         if (fs.existsSync(path.join(DIR, '.disable_autowatcher'))) return;
         const appInfo = getAppInfo();
         if (!appInfo) { log('尚未找到 Antigravity，等待下次排程。'); return; }
         checkAndLocalizeApp(appInfo);
 
+        let asarPendingDueToLock = false;
         if (process.platform === 'win32' && isWindowsAsarBusyForAtomicSwap(appInfo.asarPath)) {
-            return;
+            try {
+                const stateDir = path.join(DIR, '.watcher-state');
+                const orig = fs.readFileSync(appInfo.asarPath);
+                const statePath = path.join(stateDir, digest(appInfo.appPath) + '.json');
+                let prev = {};
+                try { prev = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+                if (!isLocalized(orig) || prev.recipe !== recipeHash() || prev.output !== digest(orig)) {
+                    asarPendingDueToLock = true;
+                }
+            } catch {
+                asarPendingDueToLock = true;
+            }
         }
 
         // 安裝守護即同意翻譯資料自動更新；程式碼升級仍由使用者手動處理。
-        await refreshTranslationsAndReapply().catch(err => {
+        // 即使 Windows 上 Antigravity 正在執行，checkUpdate() 仍可唯讀檢查並推進 update_check.json；
+        // 僅在真有新版翻譯或本機 ASAR 待更新且被鎖檔時才回傳 exitCode = 75 觸發排程 15 分鐘重試。
+        const refreshRes = await refreshTranslationsAndReapply().catch(err => {
             log('翻譯資料更新失敗，保留目前版本：' + (err && err.message ? err.message : err));
             // Do not report scheduler success after a failed translation
             // install/reapply. The next scheduled run still retries safely.
             process.exitCode = 1;
+            return null;
         });
+        if (!process.exitCode && (asarPendingDueToLock || (refreshRes && refreshRes.reason === 'asar_busy'))) {
+            process.exitCode = 75;
+        }
     } catch (error) {
         log('自動繁中化失敗，稍後重試：' + (error.stack || error.message));
         if (IS_MAC && (error.code === 'EPERM' || (error.message && error.message.includes('EPERM')))) {
@@ -1502,5 +1654,8 @@ module.exports = {
     getLocalPackageVersion,
     resolveDesiredBrandTitle,
     syncMacPlistAsarIntegrity,
+    rotateLogFileInPlace,
+    detectRecentAppLaunchTrigger,
+    WEEKLY_INTERVAL_MS,
     refreshTranslationsAndReapply
 };

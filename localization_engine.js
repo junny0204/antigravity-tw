@@ -112,7 +112,27 @@ function readSavedBrandTitle(baseDir = __dirname) {
     return null;
 }
 
-function saveBrandTitlePreference(baseDir = __dirname, mode = 'english') {
+function resolveSudoOwnerIds() {
+    if (process.platform === 'win32') return null;
+    if (typeof process.getuid !== 'function' || process.getuid() !== 0) return null;
+    const sudoUser = process.env.SUDO_USER;
+    if (!sudoUser || sudoUser === 'root') return null;
+    const uidNum = Number(process.env.SUDO_UID);
+    const gidNum = Number(process.env.SUDO_GID);
+    if (Number.isInteger(uidNum) && uidNum > 0 && Number.isInteger(gidNum) && gidNum >= 0) {
+        return { uid: uidNum, gid: gidNum };
+    }
+    try {
+        const uid = Number(child_process.execFileSync('/usr/bin/id', ['-u', sudoUser], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+        const gid = Number(child_process.execFileSync('/usr/bin/id', ['-g', sudoUser], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+        if (Number.isInteger(uid) && uid > 0 && Number.isInteger(gid) && gid >= 0) {
+            return { uid, gid };
+        }
+    } catch {}
+    return null;
+}
+
+function saveBrandTitlePreference(baseDir = __dirname, mode = 'english', { chownToSudoUser = true } = {}) {
     const normalized = ['english', 'hidden', 'translated'].includes(mode) ? mode : 'english';
     try {
         const stateDir = path.join(baseDir, '.watcher-state');
@@ -124,6 +144,14 @@ function saveBrandTitlePreference(baseDir = __dirname, mode = 'english') {
             fs.renameSync(tmp, prefPath);
         } catch (err) {
             try { fs.rmSync(tmp, { force: true }); } catch {}
+            return;
+        }
+        if (chownToSudoUser) {
+            const owner = resolveSudoOwnerIds();
+            if (owner) {
+                try { fs.chownSync(stateDir, owner.uid, owner.gid); } catch {}
+                try { fs.chownSync(prefPath, owner.uid, owner.gid); } catch {}
+            }
         }
     } catch {}
 }
@@ -875,7 +903,7 @@ function prepareMacWatcherSync({
     sourceDir = __dirname,
     runtimes = discoverMacWatcherRuntimes()
 } = {}) {
-    const session = { synced: [], locks: [], unwritableSystem: false };
+    const session = { sourceDir, synced: [], syncedItems: [], locks: [], unwritableSystem: false };
     if (!fs.existsSync(path.join(sourceDir, 'auto_localize_watcher.js'))) return session;
 
     for (const item of runtimes) {
@@ -910,12 +938,6 @@ function prepareMacWatcherSync({
             }
         }
         try {
-            const srcBrandPref = path.join(sourceDir, '.watcher-state', 'brand_preference.json');
-            if (fs.existsSync(srcBrandPref) && !fs.lstatSync(srcBrandPref).isSymbolicLink()) {
-                fs.copyFileSync(srcBrandPref, path.join(rtDir, '.watcher-state', 'brand_preference.json'));
-            }
-        } catch {}
-        try {
             const srcPkg = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8'));
             const sourceVersion = srcPkg && typeof srcPkg.version === 'string' ? srcPkg.version.trim() : '';
             const activePath = path.join(rtDir, '.watcher-state', 'active_translation.json');
@@ -927,6 +949,7 @@ function prepareMacWatcherSync({
             }
         } catch {}
         session.synced.push(rtDir);
+        session.syncedItems.push({ kind: item.kind, runtimeDir: rtDir });
     }
     if (session.unwritableSystem) {
         console.warn("[警告] 检测到系统级背景守护 (LaunchDaemon) 无写入权限，请执行 sudo bash ./install_macos_autowatcher.sh --daemon 同步更新，以免旧版守护回滚 app.asar。");
@@ -934,23 +957,41 @@ function prepareMacWatcherSync({
     return session;
 }
 
-function commitMacWatcherSync(session, macAppBundle, asarPath) {
+function commitMacWatcherSync(session, macAppBundle, asarPath, { persistBrand = false, brandTitle = BRAND_TITLE_MODE } = {}) {
     if (!session || !session.synced || session.synced.length === 0) return;
     const asarHash = crypto.createHash('sha256').update(fs.readFileSync(asarPath)).digest('hex');
     const appKey = crypto.createHash('sha256').update(macAppBundle).digest('hex');
-    for (const rtDir of session.synced) {
+    const items = Array.isArray(session.syncedItems) && session.syncedItems.length > 0
+        ? session.syncedItems
+        : session.synced.map(runtimeDir => ({ kind: 'user', runtimeDir }));
+    const sudoOwner = resolveSudoOwnerIds();
+    for (const item of items) {
+        const rtDir = item.runtimeDir;
         try {
             const stateDir = path.join(rtDir, '.watcher-state');
             fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+            if (persistBrand) {
+                // Strictly preserve root:wheel ownership for system LaunchDaemon runtimes
+                saveBrandTitlePreference(rtDir, brandTitle, { chownToSudoUser: item.kind !== 'system' });
+            } else if (session.sourceDir) {
+                const existingBrand = readSavedBrandTitle(session.sourceDir);
+                if (existingBrand) {
+                    saveBrandTitlePreference(rtDir, existingBrand, { chownToSudoUser: item.kind !== 'system' });
+                }
+            }
             const recipe = computeDirRecipeHash(rtDir);
             const statePath = path.join(stateDir, appKey + '.json');
             fs.writeFileSync(statePath, JSON.stringify({
                 recipe,
                 output: asarHash,
                 version: getPackageVersion(),
-                brandTitle: BRAND_TITLE_MODE,
+                brandTitle,
                 updatedAt: new Date().toISOString()
             }) + '\n');
+            if (item.kind === 'user' && sudoOwner) {
+                try { fs.chownSync(stateDir, sudoOwner.uid, sudoOwner.gid); } catch {}
+                try { fs.chownSync(statePath, sudoOwner.uid, sudoOwner.gid); } catch {}
+            }
         } catch {}
     }
     if (session.synced.length > 0) {
@@ -1138,7 +1179,10 @@ function install20(resourcesDir, noKill = false, staging = false, options = {}) 
                 return false;
             }
             if (macWatcherSession && macBundleForPlist) {
-                commitMacWatcherSync(macWatcherSession, macBundleForPlist, asarPath);
+                commitMacWatcherSync(macWatcherSession, macBundleForPlist, asarPath, {
+                    persistBrand: Boolean(options.persistBrand),
+                    brandTitle: BRAND_TITLE_MODE
+                });
             }
         }
 
@@ -1340,15 +1384,17 @@ function main() {
     // 4. 执行安装或卸载恢复
     let success = false;
 
+    const persistBrand = !huifu && !staging && (interactive || HAS_BRAND_TITLE_ARG) && (syncWatcher || isRealAppInstallDir(installDir));
     if (huifu) {
         console.log("====== 正在卸载中文汉化，恢复官方原版 ======");
         success = restore20(resourcesDir, noKill);
     } else {
-        if (!staging && (interactive || HAS_BRAND_TITLE_ARG) && (syncWatcher || isRealAppInstallDir(installDir))) {
-            saveBrandTitlePreference(__dirname, BRAND_TITLE_MODE);
-        }
         console.log("====== 正在安装 Antigravity 中文汉化 ======");
-        success = install20(resourcesDir, noKill, staging, { syncWatcher });
+        success = install20(resourcesDir, noKill, staging, { syncWatcher, persistBrand });
+    }
+
+    if (success && persistBrand) {
+        saveBrandTitlePreference(__dirname, BRAND_TITLE_MODE, { chownToSudoUser: true });
     }
 
     if (success && !huifu && !staging && process.platform === 'win32' && (syncWatcher || isRealAppInstallDir(installDir))) {
