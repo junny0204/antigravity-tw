@@ -226,6 +226,9 @@ if [ "$IS_DAEMON" -eq 1 ]; then
     /usr/sbin/chown -R root:wheel "$RUNTIME"
     /bin/chmod -R go-w "$RUNTIME"
     /usr/bin/install -d -o root -g wheel -m 700 "$RUNTIME/.watcher-state"
+    if [ -f "$DIR/.watcher-state/brand_preference.json" ] && [ ! -L "$DIR/.watcher-state/brand_preference.json" ]; then
+        /usr/bin/install -o root -g wheel -m 644 "$DIR/.watcher-state/brand_preference.json" "$RUNTIME/.watcher-state/brand_preference.json"
+    fi
     
     PLIST_TMP="$(mktemp "$BASE/launchd.XXXXXX")"
     cat > "$PLIST_TMP" <<PLIST_EOF
@@ -349,6 +352,9 @@ else
     done
     mkdir -p "$RUNTIME/.watcher-state"
     rm -f "$RUNTIME/.watcher-state/update_policy.json"
+    if [ -f "$DIR/.watcher-state/brand_preference.json" ] && [ ! -L "$DIR/.watcher-state/brand_preference.json" ]; then
+        cp "$DIR/.watcher-state/brand_preference.json" "$RUNTIME/.watcher-state/brand_preference.json"
+    fi
     
     PLIST_TMP="$(mktemp "$BASE/launchd.XXXXXX")"
     cat > "$PLIST_TMP" <<PLIST_EOF

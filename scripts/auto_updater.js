@@ -494,7 +494,7 @@ function extractZipArchive(zipPath, extractDir) {
     verifyZipEntries(zipPath);
     fs.mkdirSync(extractDir, { recursive: true });
     if (process.platform === 'win32') {
-        execFileSync('tar.exe', ['-xf', zipPath, '-C', extractDir], { stdio: 'pipe', timeout: 60000 });
+        execFileSync('tar.exe', ['-xf', zipPath, '-C', extractDir], { stdio: 'pipe', timeout: 60000, windowsHide: true });
     } else if (process.platform === 'darwin') {
         try {
             execFileSync('/usr/bin/ditto', ['-xk', zipPath, extractDir], { stdio: 'pipe', timeout: 60000 });
@@ -532,6 +532,56 @@ function notifyMac(title, message) {
     } catch {}
 }
 
+function writeJsonAtomically(filePath, obj) {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 });
+    try {
+        fs.renameSync(tmp, filePath);
+    } catch (err) {
+        try { fs.rmSync(tmp, { force: true }); } catch {}
+        throw err;
+    }
+}
+
+function adjustUpdateCheckCooldown(cacheFilePath, retryAfterMs = 15 * 60 * 1000, intervalMs = 24 * 60 * 60 * 1000) {
+    if (!cacheFilePath || !fs.existsSync(cacheFilePath)) return false;
+    try {
+        const current = JSON.parse(fs.readFileSync(cacheFilePath, 'utf8'));
+        if (!current || typeof current !== 'object') return false;
+        current.lastChecked = Math.max(0, Date.now() - intervalMs + retryAfterMs);
+        current.retryScheduled = true;
+        writeJsonAtomically(cacheFilePath, current);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function pruneOldTranslationPacks(baseDir, keepVersions = []) {
+    const packsRoot = path.join(baseDir, '.translation-packs');
+    if (!fs.existsSync(packsRoot)) return [];
+    const keep = new Set(keepVersions.filter(v => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v)));
+    const removed = [];
+    try {
+        if (fs.lstatSync(packsRoot).isSymbolicLink() || !fs.lstatSync(packsRoot).isDirectory()) return [];
+        for (const entry of fs.readdirSync(packsRoot, { withFileTypes: true })) {
+            if (!/^\d+\.\d+\.\d+$/.test(entry.name)) continue;
+            if (keep.has(entry.name)) continue;
+            const full = path.join(packsRoot, entry.name);
+            try {
+                const st = fs.lstatSync(full);
+                if (!st.isSymbolicLink() && st.isDirectory()) {
+                    fs.rmSync(full, { recursive: true, force: true });
+                    removed.push(entry.name);
+                }
+            } catch {}
+        }
+    } catch {}
+    return removed;
+}
+
 async function checkUpdate({
     repo = loadRepoConfig().repo,
     currentVersion = '',
@@ -566,8 +616,7 @@ async function checkUpdate({
 
         if (cacheFilePath) {
             try {
-                fs.mkdirSync(path.dirname(cacheFilePath), { recursive: true });
-                fs.writeFileSync(cacheFilePath, JSON.stringify(result, null, 2) + '\n');
+                writeJsonAtomically(cacheFilePath, result);
             } catch {}
         }
 
@@ -589,6 +638,8 @@ module.exports = {
     readActiveTranslation,
     validateTranslationPack,
     installTranslationUpdate,
+    adjustUpdateCheckCooldown,
+    pruneOldTranslationPacks,
     verifyZipEntries,
     fetchLatestRelease,
     downloadVerifiedAsset,

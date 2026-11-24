@@ -331,6 +331,10 @@ function recipeHash() {
             }
         }
     }
+    const brandPrefRel = path.join('.watcher-state', 'brand_preference.json');
+    if (fs.existsSync(path.join(DIR, brandPrefRel))) {
+        files.push(brandPrefRel);
+    }
     const active = autoUpdater && typeof autoUpdater.readActiveTranslation === 'function'
         ? autoUpdater.readActiveTranslation(DIR) : null;
     if (active) {
@@ -718,11 +722,55 @@ function resumePendingAsarRecovery(appInfo, stateDir, exchange = exchangeAsar) {
     }
 }
 
-function buildArchive(stageDir) {
+function resolveDesiredBrandTitle({ stateDir, previous = null, targetMeta = null, baseDir = DIR } = {}) {
+    const validModes = new Set(['english', 'hidden', 'translated']);
+    const candidateDirs = [];
+    if (stateDir) candidateDirs.push(stateDir);
+    if (baseDir) candidateDirs.push(path.join(baseDir, '.watcher-state'));
+    for (const dir of candidateDirs) {
+        try {
+            const prefPath = path.join(dir, 'brand_preference.json');
+            const st = fs.lstatSync(prefPath);
+            if (!st.isSymbolicLink() && st.isFile()) {
+                const parsed = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
+                if (parsed && validModes.has(parsed.brandTitle)) return parsed.brandTitle;
+            }
+        } catch {}
+    }
+    if (targetMeta && validModes.has(targetMeta.brandTitle)) return targetMeta.brandTitle;
+    if (previous && validModes.has(previous.brandTitle)) return previous.brandTitle;
+    return 'english';
+}
+
+function buildArchive(stageDir, brandTitle = 'english') {
+    const safeBrand = ['english', 'hidden', 'translated'].includes(brandTitle) ? brandTitle : 'english';
     execFileSync(process.execPath, [
-        path.join(DIR, 'localization_engine.js'), '--tw', '--brand-title', 'english',
+        path.join(DIR, 'localization_engine.js'), '--tw', '--brand-title', safeBrand,
         '--install-dir', stageDir, '--no-kill', '--staging'
     ], { cwd: DIR, stdio: 'pipe', timeout: 180000, windowsHide: true });
+}
+
+function syncMacPlistAsarIntegrity(appPath, asarPath) {
+    if (!appPath || !asarPath) return false;
+    const plistPath = path.join(appPath, 'Contents', 'Info.plist');
+    if (!fs.existsSync(plistPath) || !fs.existsSync(asarPath)) return false;
+    ensureRegularTarget(plistPath);
+    const plistStat = fs.statSync(plistPath);
+    const plistContent = fs.readFileSync(plistPath, 'utf8');
+    if (!plistContent.includes('ElectronAsarIntegrity')) return false;
+    const asarBuf = fs.readFileSync(asarPath);
+    if (asarBuf.length < 16) return false;
+    const headerStrSize = asarBuf.readUInt32LE(12);
+    if (!headerStrSize || 16 + headerStrSize > asarBuf.length) return false;
+    const headerHash = crypto.createHash('sha256').update(asarBuf.subarray(16, 16 + headerStrSize)).digest('hex');
+    const integrityRegex = /(<key>ElectronAsarIntegrity<\/key>[\s\S]*?<key>Resources\/app\.asar<\/key>[\s\S]*?<key>hash<\/key>\s*<string>)[a-fA-F0-9]{64}(<\/string>)/;
+    if (!integrityRegex.test(plistContent)) return false;
+    const updatedPlist = plistContent.replace(integrityRegex, `$1${headerHash}$2`);
+    if (updatedPlist === plistContent) return false;
+    const tmpPlist = path.join(os.tmpdir(), `ag_plist_${process.pid}_${crypto.randomBytes(4).toString('hex')}.plist`);
+    fs.writeFileSync(tmpPlist, updatedPlist, { mode: plistStat.mode & 0o777, flag: 'wx' });
+    safeReplaceFile(tmpPlist, plistPath, plistStat.mode, plistStat.uid, plistStat.gid);
+    return true;
 }
 
 function signApp(appPath, sourceStat) {
@@ -801,6 +849,18 @@ function checkAndLocalizeApp(appInfo, {
         return false;
     }
 
+    const desiredBrandTitle = resolveDesiredBrandTitle({ stateDir, previous, targetMeta, baseDir: DIR });
+    const plistPath = path.join(appPath, 'Contents', 'Info.plist');
+    let originalPlistBytes = null;
+    let originalPlistStat = null;
+    let plistModified = false;
+    try {
+        if (fs.existsSync(plistPath) && !fs.lstatSync(plistPath).isSymbolicLink()) {
+            originalPlistStat = fs.statSync(plistPath);
+            originalPlistBytes = fs.readFileSync(plistPath);
+        }
+    } catch {}
+
     const release = acquireLock(path.join(stateDir, 'run.lock'), sourceStat.uid, sourceStat.gid);
     if (!release) { log('已有守護程序執行中，略過。'); return false; }
     let stageDir;
@@ -815,7 +875,7 @@ function checkAndLocalizeApp(appInfo, {
         const unpacked = asarPath + '.unpacked';
         if (fs.existsSync(unpacked)) fs.cpSync(unpacked, stageAsar + '.unpacked', { recursive: true });
         log(localized ? '套用新的字典／引擎修訂。' : '偵測到官方更新，開始繁中化。');
-        build(stageDir);
+        build(stageDir, desiredBrandTitle);
         const result = fs.readFileSync(stageAsar);
         resultHash = digest(result);
         if (!result.includes(Buffer.from(NEEDLE))) throw new Error('建置缺少繁中特徵詞，保留原檔。');
@@ -897,12 +957,18 @@ function checkAndLocalizeApp(appInfo, {
                 replacementDir = null;
             } catch {}
         }
+        plistModified = syncMacPlistAsarIntegrity(appPath, asarPath);
         sign(appPath, sourceStat);
         if (digest(fs.readFileSync(asarPath)) !== resultHash) {
             throw new Error('簽署期間官方 app.asar 已更新，保留較新檔案並取消本輪收據。');
         }
         const stateTmp = path.join(stateDir, digest(appPath) + '.json.tmp');
-        fs.writeFileSync(stateTmp, JSON.stringify({ recipe, output: digest(result), updatedAt: new Date().toISOString() }) + '\n');
+        fs.writeFileSync(stateTmp, JSON.stringify({
+            recipe,
+            output: digest(result),
+            brandTitle: desiredBrandTitle,
+            updatedAt: new Date().toISOString()
+        }) + '\n');
         if (ROOT) {
             try {
                 const parentStat = fs.statSync(path.dirname(stateTmp));
@@ -947,6 +1013,14 @@ function checkAndLocalizeApp(appInfo, {
                 fsyncDirectory(path.dirname(asarPath));
                 if (createdRollbackDir) {
                     try { fs.rmSync(rollbackDir, { recursive: true, force: true }); } catch {}
+                }
+                if (plistModified && originalPlistBytes) {
+                    try {
+                        const tmpRestorePlist = path.join(os.tmpdir(), `ag_plist_rb_${process.pid}_${crypto.randomBytes(4).toString('hex')}.plist`);
+                        const pMode = originalPlistStat ? (originalPlistStat.mode & 0o777) : 0o644;
+                        fs.writeFileSync(tmpRestorePlist, originalPlistBytes, { mode: pMode, flag: 'wx' });
+                        safeReplaceFile(tmpRestorePlist, plistPath, pMode, originalPlistStat && originalPlistStat.uid, originalPlistStat && originalPlistStat.gid);
+                    } catch {}
                 }
                 sign(appPath, sourceStat);
                 log('套用未通過，已還原原始 app.asar。');
@@ -1249,6 +1323,11 @@ async function refreshTranslationsAndReapply({
     if (!releaseLock) {
         return { updated: false, reason: 'locked' };
     }
+    const scheduleShortRetry = () => {
+        if (typeof updater.adjustUpdateCheckCooldown === 'function') {
+            updater.adjustUpdateCheckCooldown(cacheFile, 15 * 60 * 1000);
+        }
+    };
     let updateRes;
     try {
         updateRes = await updater.installTranslationUpdate({
@@ -1257,6 +1336,9 @@ async function refreshTranslationsAndReapply({
             release: res.release,
             ...updaterOptions
         });
+    } catch (installErr) {
+        scheduleShortRetry();
+        throw installErr;
     } finally {
         releaseLock();
     }
@@ -1270,6 +1352,7 @@ async function refreshTranslationsAndReapply({
                 throw new Error('守護程序執行完畢，但 app.asar 未載入新版翻譯，不能宣稱套用成功。');
             }
         } catch (error) {
+            scheduleShortRetry();
             // Restoring only the pointer is not sufficient: a child can
             // exit successfully while leaving an unexpected ASAR version.
             const rollbackLock = acquireLock(path.join(stateDir, 'run.lock'));
@@ -1325,6 +1408,9 @@ async function refreshTranslationsAndReapply({
                 }
             }
             throw error;
+        }
+        if (typeof updater.pruneOldTranslationPacks === 'function') {
+            updater.pruneOldTranslationPacks(targetDir, [updateRes.newVersion, active && active.version]);
         }
         log(`已完成 v${updateRes.newVersion} 翻譯資料套用；沒有更新程式功能。`);
     } else if (updateRes && updateRes.reason === 'no_translation_only_asset') {
@@ -1414,5 +1500,7 @@ module.exports = {
     compareVersions,
     extractLocalizationMeta,
     getLocalPackageVersion,
+    resolveDesiredBrandTitle,
+    syncMacPlistAsarIntegrity,
     refreshTranslationsAndReapply
 };

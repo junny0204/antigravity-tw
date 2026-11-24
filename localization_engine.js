@@ -99,8 +99,38 @@ function getOptionValue(name, defaultValue) {
     return defaultValue;
 }
 
+function readSavedBrandTitle(baseDir = __dirname) {
+    try {
+        const prefPath = path.join(baseDir, '.watcher-state', 'brand_preference.json');
+        const st = fs.lstatSync(prefPath);
+        if (st.isSymbolicLink() || !st.isFile()) return null;
+        const parsed = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
+        if (parsed && ['english', 'hidden', 'translated'].includes(parsed.brandTitle)) {
+            return parsed.brandTitle;
+        }
+    } catch {}
+    return null;
+}
+
+function saveBrandTitlePreference(baseDir = __dirname, mode = 'english') {
+    const normalized = ['english', 'hidden', 'translated'].includes(mode) ? mode : 'english';
+    try {
+        const stateDir = path.join(baseDir, '.watcher-state');
+        fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+        const prefPath = path.join(stateDir, 'brand_preference.json');
+        const tmp = `${prefPath}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ brandTitle: normalized }) + '\n', { mode: 0o644 });
+        try {
+            fs.renameSync(tmp, prefPath);
+        } catch (err) {
+            try { fs.rmSync(tmp, { force: true }); } catch {}
+        }
+    } catch {}
+}
+
 const HAS_BRAND_TITLE_ARG = process.argv.some(arg => arg === '--brand-title' || arg.startsWith('--brand-title='));
-const rawBrandTitle = String(getOptionValue('--brand-title', 'english')).toLowerCase();
+const savedBrandDefault = !HAS_BRAND_TITLE_ARG ? readSavedBrandTitle(__dirname) : null;
+const rawBrandTitle = String(getOptionValue('--brand-title', savedBrandDefault || 'english')).toLowerCase();
 let BRAND_TITLE_MODE = BRAND_TITLE_ALIASES[rawBrandTitle] || 'english';
 if (!BRAND_TITLE_ALIASES[rawBrandTitle]) {
     console.warn(USE_TW
@@ -347,7 +377,7 @@ function generateJs() {
     );
 
     const active = getActiveTranslation();
-    const metaComment = `/* --- ANTIGRAVITY L10N META:${JSON.stringify({ version: getPackageVersion(), translationVersion: active ? active.version : getPackageVersion(), buildTime: Date.now() })} --- */`;
+    const metaComment = `/* --- ANTIGRAVITY L10N META:${JSON.stringify({ version: getPackageVersion(), translationVersion: active ? active.version : getPackageVersion(), brandTitle: BRAND_TITLE_MODE, buildTime: Date.now() })} --- */`;
     return `${SIGNATURE_START}\n${metaComment}\n${body}\n${SIGNATURE_END}`;
 }
 
@@ -479,9 +509,12 @@ function detectInstallationDir(manualDir) {
         }
     } else if (process.platform === 'darwin') {
         addCandidate("/Applications/Antigravity.app");
+        addCandidate("/Applications/Antigravity IDE.app");
         addCandidate(path.join(process.env.HOME || '', 'Applications', 'Antigravity.app'));
+        addCandidate(path.join(process.env.HOME || '', 'Applications', 'Antigravity IDE.app'));
         if (process.env.SUDO_USER && process.env.SUDO_USER !== 'root') {
             addCandidate(path.join('/Users', process.env.SUDO_USER, 'Applications', 'Antigravity.app'));
+            addCandidate(path.join('/Users', process.env.SUDO_USER, 'Applications', 'Antigravity IDE.app'));
         }
     }
 
@@ -742,6 +775,10 @@ function computeDirRecipeHash(dir) {
             }
         }
     }
+    const brandPrefRel = path.join('.watcher-state', 'brand_preference.json');
+    if (fs.existsSync(path.join(dir, brandPrefRel))) {
+        files.push(brandPrefRel);
+    }
     try {
         const updaterPath = path.join(dir, 'scripts', 'auto_updater.js');
         if (fs.existsSync(updaterPath)) {
@@ -873,6 +910,12 @@ function prepareMacWatcherSync({
             }
         }
         try {
+            const srcBrandPref = path.join(sourceDir, '.watcher-state', 'brand_preference.json');
+            if (fs.existsSync(srcBrandPref) && !fs.lstatSync(srcBrandPref).isSymbolicLink()) {
+                fs.copyFileSync(srcBrandPref, path.join(rtDir, '.watcher-state', 'brand_preference.json'));
+            }
+        } catch {}
+        try {
             const srcPkg = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8'));
             const sourceVersion = srcPkg && typeof srcPkg.version === 'string' ? srcPkg.version.trim() : '';
             const activePath = path.join(rtDir, '.watcher-state', 'active_translation.json');
@@ -905,6 +948,7 @@ function commitMacWatcherSync(session, macAppBundle, asarPath) {
                 recipe,
                 output: asarHash,
                 version: getPackageVersion(),
+                brandTitle: BRAND_TITLE_MODE,
                 updatedAt: new Date().toISOString()
             }) + '\n');
         } catch {}
@@ -945,6 +989,7 @@ function syncActiveWindowsWatcher(installDir, resourcesDir, {
                 recipe,
                 output: asarHash,
                 version: getPackageVersion(),
+                brandTitle: BRAND_TITLE_MODE,
                 updatedAt: new Date().toISOString()
             }) + '\n');
         }
@@ -1299,6 +1344,9 @@ function main() {
         console.log("====== 正在卸载中文汉化，恢复官方原版 ======");
         success = restore20(resourcesDir, noKill);
     } else {
+        if (!staging && (interactive || HAS_BRAND_TITLE_ARG) && (syncWatcher || isRealAppInstallDir(installDir))) {
+            saveBrandTitlePreference(__dirname, BRAND_TITLE_MODE);
+        }
         console.log("====== 正在安装 Antigravity 中文汉化 ======");
         success = install20(resourcesDir, noKill, staging, { syncWatcher });
     }
@@ -1360,6 +1408,8 @@ if (typeof module !== 'undefined' && module.exports) {
         getPackageVersion,
         isRealAppInstallDir,
         computeDirRecipeHash,
+        readSavedBrandTitle,
+        saveBrandTitlePreference,
         discoverMacWatcherRuntimes,
         prepareMacWatcherSync,
         commitMacWatcherSync,

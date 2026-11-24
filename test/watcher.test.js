@@ -725,6 +725,107 @@ test('Windows checkAndLocalizeApp skips cleanly without building when app.asar l
     assert.equal(f.read(), 'official-v1\n命令選擇區');
 });
 
+test('watcher syncs macOS Info.plist ElectronAsarIntegrity before signing and rolls it back on sign failure', t => {
+    const crypto = require('node:crypto');
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-plist-integrity-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    const makeValidAsar = (bodyText) => {
+        const body = Buffer.from(bodyText, 'utf8');
+        const json = Buffer.from(JSON.stringify({ files: { 'preload.js': { size: body.length, offset: '0' } } }), 'utf8');
+        const aligned = Math.ceil((json.length + 4) / 4) * 4;
+        const prefix = Buffer.alloc(12 + aligned);
+        prefix.writeUInt32LE(4, 0);
+        prefix.writeUInt32LE(aligned + 4, 4);
+        prefix.writeUInt32LE(aligned, 8);
+        prefix.writeUInt32LE(json.length, 12);
+        json.copy(prefix, 16);
+        return { buf: Buffer.concat([prefix, body]), headerHash: crypto.createHash('sha256').update(json).digest('hex') };
+    };
+
+    const appPath = path.join(root, 'Antigravity.app');
+    const contentsDir = path.join(appPath, 'Contents');
+    const resDir = path.join(contentsDir, 'Resources');
+    fs.mkdirSync(resDir, { recursive: true });
+
+    const origAsar = makeValidAsar('// official');
+    const localizedAsar = makeValidAsar('/* --- ANTIGRAVITY CHINESE LOCALIZATION START --- */\n// 命令選擇區');
+    const asarPath = path.join(resDir, 'app.asar');
+    fs.writeFileSync(asarPath, origAsar.buf);
+
+    const plistPath = path.join(contentsDir, 'Info.plist');
+    const origPlist = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<plist version="1.0"><dict>',
+        '  <key>ElectronAsarIntegrity</key>',
+        '  <dict>',
+        '    <key>Resources/app.asar</key>',
+        '    <dict>',
+        '      <key>algorithm</key><string>SHA256</string>',
+        `      <key>hash</key><string>${origAsar.headerHash}</string>`,
+        '    </dict>',
+        '  </dict>',
+        '</dict></plist>'
+    ].join('\n');
+    fs.writeFileSync(plistPath, origPlist, 'utf8');
+
+    const stateDir = path.join(root, 'state');
+    const seenPlistsDuringSign = [];
+
+    // 1. Sign failure must roll back BOTH app.asar AND Info.plist before re-signing
+    let failOnce = true;
+    assert.throws(() => checkAndLocalizeApp({ appPath, asarPath }, {
+        stateDir, recipe: 'r1', wait() {},
+        build(stage) { fs.writeFileSync(path.join(stage, 'app.asar'), localizedAsar.buf); },
+        sign() {
+            seenPlistsDuringSign.push(fs.readFileSync(plistPath, 'utf8'));
+            if (failOnce) { failOnce = false; throw new Error('codesign failed'); }
+        }
+    }), /codesign failed/);
+    assert.equal(seenPlistsDuringSign.length, 2);
+    assert.ok(seenPlistsDuringSign[0].includes(localizedAsar.headerHash), 'Info.plist must already have new hash when codesign runs');
+    assert.equal(seenPlistsDuringSign[1], origPlist, 'Rollback codesign must seal the restored original Info.plist');
+    assert.equal(fs.readFileSync(plistPath, 'utf8'), origPlist, 'Info.plist must roll back to original bytes when signing fails');
+    assert.deepEqual(fs.readFileSync(asarPath), origAsar.buf);
+
+    // 2. Successful run updates Info.plist to exact new ASAR header SHA-256
+    const ok = checkAndLocalizeApp({ appPath, asarPath }, {
+        stateDir, recipe: 'r1', wait() {},
+        build(stage) { fs.writeFileSync(path.join(stage, 'app.asar'), localizedAsar.buf); },
+        sign() {}
+    });
+    assert.equal(ok, true);
+    assert.ok(fs.readFileSync(plistPath, 'utf8').includes(localizedAsar.headerHash));
+});
+
+test('watcher preserves user brandTitle preference across official updates', t => {
+    const f = fixture(t);
+    fs.mkdirSync(f.stateDir, { recursive: true });
+    fs.writeFileSync(path.join(f.stateDir, 'brand_preference.json'), JSON.stringify({ brandTitle: 'hidden' }) + '\n');
+
+    const seenBrands = [];
+    assert.equal(f.run({
+        build(stage, brandTitle) {
+            seenBrands.push(brandTitle);
+            f.options.build(stage);
+        }
+    }), true);
+    assert.deepEqual(seenBrands, ['hidden']);
+
+    // Even if brand_preference.json is removed later and official update overwrites app.asar,
+    // previous receipt in stateDir still remembers 'hidden'
+    fs.unlinkSync(path.join(f.stateDir, 'brand_preference.json'));
+    fs.writeFileSync(f.asarPath, 'official-v2-english');
+    assert.equal(f.run({
+        build(stage, brandTitle) {
+            seenBrands.push(brandTitle);
+            f.options.build(stage);
+        }
+    }), true);
+    assert.deepEqual(seenBrands, ['hidden', 'hidden']);
+});
+
+
 
 
 
