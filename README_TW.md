@@ -40,16 +40,23 @@
 
 前置需求：已安裝 Node.js `>= 22.12.0`（官方安裝包或 `brew install node`）。
 
-1. 下載或 `git clone` 本倉庫：
-   ```bash
-   git clone https://github.com/junny0204/antigravity-tw.git
-   cd antigravity-tw
-   ```
-2. 執行一次繁體中文化：點兩下 **`點兩下安裝繁體中文.command`**（或終端機執行 `node localization_engine.js --tw --brand-title english`）。
-3. 啟用背景常駐自動更新：點兩下 **`點兩下安裝macOS背景守護.command`**（或在終端機以 bash 執行 `install_macos_autowatcher.sh`）。
-4. 按 `Cmd+Q` 完全退出 Antigravity 並重新開啟即可生效。
+### 最防呆一鍵安裝（推薦：免手動解壓、免處理雙擊權限）
 
-> 註：若 Antigravity 安裝於 `/Applications/` 且系統提示權限不足，請輸入管理員密碼或於「系統設定 → 隱私權與安全性 → App 管理」授權。
+打開 Mac 的「**終端機（Terminal）**」，直接複製貼上以下一行按 Enter，即可自動下載、安裝繁體中文並啟用背景自動更新：
+
+```bash
+git clone https://github.com/junny0204/antigravity-tw.git ~/antigravity-tw && cd ~/antigravity-tw && node localization_engine.js --tw --brand-title english && bash install_macos_autowatcher.sh
+```
+
+執行完成後，按 **`Cmd + Q`** 完全退出 Antigravity 並重新開啟即生效（若系統要求密碼，輸入 Mac 開機密碼即可）。
+
+### 圖形化點兩下安裝（若已下載資料夾）
+
+1. 執行一次繁體中文化：點兩下 **`點兩下安裝繁體中文.command`**。
+2. 啟用背景常駐自動更新：點兩下 **`點兩下安裝macOS背景守護.command`**（或在終端機以 bash 執行 `install_macos_autowatcher.sh`）。
+3. 按 `Cmd + Q` 完全退出 Antigravity 並重新開啟即可生效。
+
+> 註：若 Antigravity 安裝於 `/Applications/` 且系統提示權限不足，請輸入管理員密碼或於「系統設定 → 隱私權與安全性 → App 管理」授權。若直接從瀏覽器下載 ZIP 解壓而遭 macOS Gatekeeper 攔截，可對 `.command` 檔按右鍵 →「開啟」，或改用上方終端機一行指令。
 
 - 卸載背景守護：點兩下 **`點兩下卸載macOS背景守護.command`**
 - 還原官方英文：點兩下 **`點兩下還原官方英文.command`**
