@@ -1344,7 +1344,7 @@ async function main() {
     } catch (error) {
         log('自動繁中化失敗，稍後重試：' + (error.stack || error.message));
         if (IS_MAC && (error.code === 'EPERM' || (error.message && error.message.includes('EPERM')))) {
-            notifyMacUser('Antigravity 繁中化', '因 macOS 系統權限或 App 管理限制，自動覆寫受阻；請在專案中執行「點兩下安裝繁體中文」或於系統設定授權。');
+            log('因 macOS「App 管理」權限尚未開啟，自動寫入受阻；請於「系統設定 → 隱私權與安全性 → App 管理」開啟終端機權限後重試。');
         } else if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES' || (error.message && (error.message.includes('EPERM') || error.message.includes('EACCES'))))) {
             log('因 Windows 資料夾權限限制（例如 Program Files），最低權限排程無法自動覆寫。請依安裝手冊以管理員身分手動重新套用中文化；重新安裝守護不會提高背景排程權限。');
         }

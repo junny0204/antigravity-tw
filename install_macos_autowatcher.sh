@@ -258,6 +258,33 @@ PLIST_EOF
     /usr/bin/install -o root -g wheel -m 644 "$PLIST_TMP" "$PLIST"
     /bin/rm -f "$PLIST_TMP"
     /bin/launchctl enable "system/$LABEL"
+    # 預先檢查 macOS「App 管理」TCC 權限：若被 Apple 系統擋住，自動打開正確的系統設定頁面引導授權
+    TARGET_RES="/Applications/Antigravity.app/Contents/Resources"
+    if [ ! -d "$TARGET_RES" ] && [ -d "/Applications/Antigravity IDE.app/Contents/Resources" ]; then
+        TARGET_RES="/Applications/Antigravity IDE.app/Contents/Resources"
+    fi
+    if [ -d "$TARGET_RES" ]; then
+        PERM_PROBE="${TARGET_RES}/.agtw_perm_probe_$$"
+        if ! /usr/bin/touch "$PERM_PROBE" 2>/dev/null; then
+            if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ] && [ "$ACTUAL_USER" != "loginwindow" ]; then
+                sudo -u "$ACTUAL_USER" /usr/bin/open "x-apple.systempreferences:com.apple.preference.security?Privacy_AppManagement" 2>/dev/null || true
+            fi
+            echo "" >&2
+            echo "============================================================" >&2
+            echo "🔒 macOS 尚未開啟「終端機」的 App 管理權限（Apple 系統規定，每台 Mac 只需開這一次）" >&2
+            echo "👉 已幫你自動打開「系統設定 → 隱私權與安全性 → App 管理」視窗！" >&2
+            echo "" >&2
+            echo "請照這 3 步做完即可：" >&2
+            echo "  1. 在剛打開的視窗中，把「終端機（Terminal）」的開關打開" >&2
+            echo "     （若清單裡沒有，點左下角「+」→ 選「應用程式 / 工具程式 / 終端機」）" >&2
+            echo "  2. 若系統跳出「結束並重新開啟」，點選它重開終端機" >&2
+            echo "  3. 回到終端機再貼一次剛剛那行指令按 Enter，就會立刻安裝完成！" >&2
+            echo "============================================================" >&2
+            exit 1
+        else
+            /bin/rm -f "$PERM_PROBE" 2>/dev/null || true
+        fi
+    fi
     echo "🌐 正在立即套用繁體中文介面（使用 ${DAEMON_NODE_BIN}）..."
     APPLY_OK=1
     if ! "$DAEMON_NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
@@ -345,6 +372,30 @@ PLIST_EOF
     mv "$PLIST_TMP" "$PLIST"
     chmod 644 "$PLIST"
     /bin/launchctl enable "gui/$CURRENT_UID/$LABEL" 2>/dev/null || true
+    TARGET_RES="/Applications/Antigravity.app/Contents/Resources"
+    if [ ! -d "$TARGET_RES" ] && [ -d "$USER_HOME/Applications/Antigravity.app/Contents/Resources" ]; then
+        TARGET_RES="$USER_HOME/Applications/Antigravity.app/Contents/Resources"
+    fi
+    if [ -d "$TARGET_RES" ]; then
+        PERM_PROBE="${TARGET_RES}/.agtw_perm_probe_$$"
+        if ! /usr/bin/touch "$PERM_PROBE" 2>/dev/null; then
+            /usr/bin/open "x-apple.systempreferences:com.apple.preference.security?Privacy_AppManagement" 2>/dev/null || true
+            echo "" >&2
+            echo "============================================================" >&2
+            echo "🔒 macOS 尚未開啟「終端機」的 App 管理權限（Apple 系統規定，每台 Mac 只需開這一次）" >&2
+            echo "👉 已幫你自動打開「系統設定 → 隱私權與安全性 → App 管理」視窗！" >&2
+            echo "" >&2
+            echo "請照這 3 步做完即可：" >&2
+            echo "  1. 在剛打開的視窗中，把「終端機（Terminal）」的開關打開" >&2
+            echo "     （若清單裡沒有，點左下角「+」→ 選「應用程式 / 工具程式 / 終端機」）" >&2
+            echo "  2. 若系統跳出「結束並重新開啟」，點選它重開終端機" >&2
+            echo "  3. 回到終端機再貼一次剛剛那行指令按 Enter，就會立刻安裝完成！" >&2
+            echo "============================================================" >&2
+            exit 1
+        else
+            /bin/rm -f "$PERM_PROBE" 2>/dev/null || true
+        fi
+    fi
     echo "🌐 正在立即套用繁體中文介面（使用 ${NODE_BIN}）..."
     APPLY_OK=1
     if ! "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
