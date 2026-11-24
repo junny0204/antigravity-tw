@@ -11,7 +11,7 @@ for arg in "$@"; do
     case "$arg" in
         --user) MODE="user" ;;
         --daemon) MODE="daemon" ;;
-        *) echo "不支援的安裝參數：$arg。守護程序預設自動更新翻譯資料。" >&2; exit 1 ;;
+        *) echo "不支援的安裝參數：${arg}。守護程序預設自動更新翻譯資料。" >&2; exit 1 ;;
     esac
 done
 
@@ -176,12 +176,16 @@ if [ "$IS_DAEMON" -eq 1 ]; then
     
     RUNTIME="$(mktemp -d "$BASE/runtime.XXXXXX")"
     /bin/chmod 755 "$RUNTIME"
-    DAEMON_NODE_BIN="$RUNTIME/node"
-    /usr/bin/install -o root -g wheel -m 755 "$NODE_BIN" "$RUNTIME/node"
-    if ! "$RUNTIME/node" -v >/dev/null 2>&1; then
+    if /usr/bin/otool -L "$NODE_BIN" 2>/dev/null | /usr/bin/grep -q '@rpath/'; then
         # Homebrew 動態連結版 Node.js 依賴 @rpath/libnode.*.dylib，無法單獨複製執行檔，改用原本的 Node 路徑
-        /bin/rm -f "$RUNTIME/node"
         DAEMON_NODE_BIN="$NODE_BIN"
+    else
+        DAEMON_NODE_BIN="$RUNTIME/node"
+        /usr/bin/install -o root -g wheel -m 755 "$NODE_BIN" "$RUNTIME/node"
+        if ! ("$RUNTIME/node" -v) >/dev/null 2>&1; then
+            /bin/rm -f "$RUNTIME/node"
+            DAEMON_NODE_BIN="$NODE_BIN"
+        fi
     fi
     for file in auto_localize_watcher.js localization_engine.js package.json package-lock.json; do
         /usr/bin/install -o root -g wheel -m 644 "$DIR/$file" "$RUNTIME/$file"
@@ -236,7 +240,7 @@ PLIST_EOF
     /usr/bin/install -o root -g wheel -m 644 "$PLIST_TMP" "$PLIST"
     /bin/rm -f "$PLIST_TMP"
     /bin/launchctl enable "system/$LABEL"
-    echo "🌐 正在立即套用繁體中文介面（使用 $DAEMON_NODE_BIN）..."
+    echo "🌐 正在立即套用繁體中文介面（使用 ${DAEMON_NODE_BIN}）..."
     if ! "$DAEMON_NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
         echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
     fi
@@ -316,7 +320,7 @@ PLIST_EOF
     mv "$PLIST_TMP" "$PLIST"
     chmod 644 "$PLIST"
     /bin/launchctl enable "gui/$CURRENT_UID/$LABEL" 2>/dev/null || true
-    echo "🌐 正在立即套用繁體中文介面（使用 $NODE_BIN）..."
+    echo "🌐 正在立即套用繁體中文介面（使用 ${NODE_BIN}）..."
     if ! "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
         echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
     fi
