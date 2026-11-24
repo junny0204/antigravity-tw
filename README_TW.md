@@ -45,7 +45,7 @@
 打開 Mac 的「**終端機（Terminal）**」，直接複製貼上以下一行按 Enter，它會自動判斷（未下載過就下載、已下載過就更新），接著自動安裝繁體中文並啟用背景自動更新：
 
 ```bash
-if [ -d ~/antigravity-tw/.git ]; then git -C ~/antigravity-tw pull --ff-only; else git clone https://github.com/junny0204/antigravity-tw.git ~/antigravity-tw; fi && cd ~/antigravity-tw && node localization_engine.js --tw --brand-title english && bash install_macos_autowatcher.sh
+if [ -d ~/antigravity-tw/.git ]; then git -C ~/antigravity-tw pull --ff-only; elif [ ! -f ~/antigravity-tw/localization_engine.js ]; then git clone https://github.com/junny0204/antigravity-tw.git ~/antigravity-tw; fi && cd ~/antigravity-tw && node localization_engine.js --tw --brand-title english && bash install_macos_autowatcher.sh
 ```
 
 執行完成後，按 **`Cmd + Q`** 完全退出 Antigravity 並重新開啟即生效（若系統要求密碼，輸入 Mac 開機密碼即可）。
