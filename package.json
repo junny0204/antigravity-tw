@@ -1,0 +1,22 @@
+{
+  "name": "antigravity-tw",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Google Antigravity 2.0 台灣繁體中文（zh-TW）在地化套件。以 qqxpee/antigravity2-cn 核心引擎整合 atonnyshen/antigravity2-TW 台灣詞庫與跨平台背景守護，支援上游自動同步與個人詞彙覆蓋。",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check-dicts": "node scripts/compare_dicts.js",
+    "sync": "node scripts/sync_upstream.js --write",
+    "sync:dry": "node scripts/sync_upstream.js",
+    "build-pack": "node scripts/build_translation_pack.js",
+    "configure": "node scripts/configure_repo.js"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.3.0",
+    "jsdom": "30.1.3"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "repo": "junny0204/antigravity-tw",
+  "assetPrefix": "antigravity-tw-translations",
+  "engineVersion": "1.0.0",
+  "minEngineVersion": "1.0.0",
+  "maxEngineVersion": "1.0.0",
+  "autoPublishDictRelease": true,
+  "upstreams": {
+    "qqxpee": {
+      "repo": "qqxpee/antigravity2-cn",
+      "branch": "main"
+    },
+    "atonnyshen": {
+      "repo": "atonnyshen/antigravity2-TW",
+      "branch": "main"
+    }
+  }
+}

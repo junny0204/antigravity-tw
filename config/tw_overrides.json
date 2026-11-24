@@ -1,0 +1,10 @@
+{
+  "description": "Personal Traditional Chinese overrides applied last during upstream sync. Edit this file to customize any UI wording without losing changes on future upstream updates.",
+  "allowForbiddenTerms": [
+    "渲染"
+  ],
+  "termReplacements": {
+    "算繪": "渲染"
+  },
+  "exactOverrides": {}
+}

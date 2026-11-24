@@ -1,0 +1,28 @@
+name: Tests & Dictionary Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install test dependencies
+        run: npm ci
+      - name: Validate Taiwan dictionaries and runtime rules
+        run: node scripts/compare_dicts.js
+      - name: Run full test suite
+        run: npm test

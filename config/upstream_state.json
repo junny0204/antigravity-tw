@@ -1,0 +1,18 @@
+{
+  "translationVersion": "1.0.0",
+  "lastSyncedAt": "2026-11-24T02:25:54.883Z",
+  "qqxpee": {
+    "repo": "qqxpee/antigravity2-cn",
+    "sha": "ae290fc0b040f86a1fe154e6f66dbbf85d1da510",
+    "engineHashes": {
+      "localization_engine.js": "3f67e812f78a341cfc4fb17faef8d3db1a81eb20bdfe7c79cd879d15511648f9",
+      "src/asar_patcher.js": "8a2151bc55ee7cd5db32587fa3ace45d2dfb1210062196d468922d6713a573e9",
+      "src/main_patches.js": "93e57b166705f182670cc8af5c7a99dd372615f4d7c01e47827db336515536d7",
+      "src/preload_runtime.js": "b7ede3214d019006f367c2b5750cd29ce4e75661d85d91b6a56afe46c57adb3a"
+    }
+  },
+  "atonnyshen": {
+    "repo": "atonnyshen/antigravity2-TW",
+    "sha": "4021d69978eb35686e774ec5119f04273e4a266e"
+  }
+}

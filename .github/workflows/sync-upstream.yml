@@ -1,0 +1,176 @@
+name: Upstream Sync (qqxpee + atonnyshen -> zh-TW)
+
+on:
+  schedule:
+    # Runs daily at 02:00 UTC (10:00 AM UTC+8 Taipei time)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_pr:
+        description: 'Open a Pull Request for review instead of auto-publishing a dict-only Release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Sync upstream dictionaries and inspect engine hashes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/sync_upstream.js --write --bump-translation-version --report sync-report.json
+
+      - name: Validate merged dictionaries and run full test suite
+        run: |
+          node scripts/compare_dicts.js
+          npm test
+
+      - name: Decide publish vs Pull Request
+        id: decide
+        env:
+          FORCE_PR: ${{ inputs.force_pr || false }}
+        run: |
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('sync-report.json', 'utf8'));
+          const cfg = JSON.parse(fs.readFileSync('config/repo.config.json', 'utf8'));
+          const forcePr = process.env.FORCE_PR === 'true';
+          const out = process.env.GITHUB_OUTPUT;
+          const lines = [
+            `dict_changed=${report.dictChanged}`,
+            `engine_changed=${report.engineChanged}`,
+            `needs_review=${report.needsReview}`,
+            `auto_publish=${report.autoPublishAllowed && !forcePr}`,
+            `next_version=${report.nextTranslationVersion}`,
+            `asset_prefix=${cfg.assetPrefix}`,
+            `min_engine=${cfg.minEngineVersion}`,
+            `max_engine=${cfg.maxEngineVersion}`,
+            `qqxpee_sha=${report.qqxpeeSha}`,
+            `atonnyshen_sha=${report.atonnyshenSha}`,
+            `changed_engine_files=${(report.changedEngineFiles || []).join(', ')}`
+          ];
+          fs.appendFileSync(out, lines.join('\n') + '\n');
+          console.log(lines.join('\n'));
+          EOF
+
+      - name: Auto-publish verified pure-translation Release (dict-only update)
+        if: steps.decide.outputs.auto_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.decide.outputs.next_version }}
+          ASSET_PREFIX: ${{ steps.decide.outputs.asset_prefix }}
+          MIN_ENGINE: ${{ steps.decide.outputs.min_engine }}
+          MAX_ENGINE: ${{ steps.decide.outputs.max_engine }}
+          QQ_SHA: ${{ steps.decide.outputs.qqxpee_sha }}
+          AT_SHA: ${{ steps.decide.outputs.atonnyshen_sha }}
+        run: |
+          set -euo pipefail
+          TAG="v${VER}"
+          ASSET_FILE="dist/${ASSET_PREFIX}-${TAG}.zip"
+
+          node scripts/build_translation_pack.js \
+            --version "${VER}" \
+            --min-engine "${MIN_ENGINE}" \
+            --max-engine "${MAX_ENGINE}" \
+            --output "${ASSET_FILE}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dicts dicts_tw rules config/upstream_state.json
+          if git diff --cached --quiet; then
+            echo "No staged file changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(sync): update zh-TW dictionaries to ${TAG}"
+          git tag -a "${TAG}" -m "Pure translation release ${TAG}"
+          git push origin main --follow-tags
+
+          gh release create "${TAG}" "${ASSET_FILE}" \
+            --draft \
+            --title "zh-TW Translation Pack ${TAG}" \
+            --notes "自動同步上游詞庫並通過台灣用語校訂與回歸測試。
+
+          - Upstream \`qqxpee/antigravity2-cn\`: \`${QQ_SHA}\`
+          - Upstream \`atonnyshen/antigravity2-TW\`: \`${AT_SHA}\`
+          - 相容核心引擎版本：\`${MIN_ENGINE}\` ~ \`${MAX_ENGINE}\`
+          - 僅含純翻譯資料包（\`${ASSET_PREFIX}-${TAG}.zip\`），Windows / macOS 背景守護將於 24 小時內驗證 SHA-256 後自動套用。"
+
+          mkdir -p "$RUNNER_TEMP/preflight"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${TAG}\")" > "$RUNNER_TEMP/preflight/release.json"
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${ASSET_PREFIX}-${TAG}.zip" --dir "$RUNNER_TEMP/preflight"
+          node scripts/check_release_assets.js "${TAG}" \
+            --file "$RUNNER_TEMP/preflight/${ASSET_PREFIX}-${TAG}.zip" \
+            --engine-version "${MIN_ENGINE}" < "$RUNNER_TEMP/preflight/release.json"
+
+          gh release edit "${TAG}" --draft=false
+          echo "Published verified pure-translation release ${TAG}."
+
+      - name: Open Pull Request for human review (engine change or manual review needed)
+        if: |
+          steps.decide.outputs.auto_publish != 'true' &&
+          (steps.decide.outputs.dict_changed == 'true' || steps.decide.outputs.engine_changed == 'true' || steps.decide.outputs.needs_review == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QQ_SHA: ${{ steps.decide.outputs.qqxpee_sha }}
+          AT_SHA: ${{ steps.decide.outputs.atonnyshen_sha }}
+          ENGINE_CHANGED: ${{ steps.decide.outputs.engine_changed }}
+          CHANGED_ENGINE_FILES: ${{ steps.decide.outputs.changed_engine_files }}
+        run: |
+          set -euo pipefail
+          BRANCH="upstream-sync/review"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${BRANCH}"
+          git add dicts dicts_tw rules config/upstream_state.json
+          if git diff --cached --quiet; then
+            git commit --allow-empty -m "chore(sync): upstream engine update detected (${QQ_SHA:0:7})"
+          else
+            git commit -m "chore(sync): upstream sync requiring review (${QQ_SHA:0:7})"
+          fi
+          git push --force origin "${BRANCH}"
+
+          PR_BODY=$(cat <<EOF
+          ## 上游更新檢視通知
+
+          - **qqxpee/antigravity2-cn**: \`${QQ_SHA}\`
+          - **atonnyshen/antigravity2-TW**: \`${AT_SHA}\`
+          - **核心引擎程式碼變動**: \`${ENGINE_CHANGED}\` (${CHANGED_ENGINE_FILES:-無})
+
+          ### 說明
+          為確保安全性，本工作流程**不會**自動覆寫可執行 JavaScript 引擎檔案。若上方顯示核心引擎有變動，請先檢視上游 commit 差異並手動整合後再合併發布。
+          EOF
+          )
+
+          if gh pr view "${BRANCH}" >/dev/null 2>&1; then
+            gh pr edit "${BRANCH}" --title "chore(sync): 上游更新待審核 (${QQ_SHA:0:7})" --body "${PR_BODY}"
+          else
+            gh pr create --base main --head "${BRANCH}" \
+              --title "chore(sync): 上游更新待審核 (${QQ_SHA:0:7})" \
+              --body "${PR_BODY}"
+          fi
