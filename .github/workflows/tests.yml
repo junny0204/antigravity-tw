@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  verify-ubuntu:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -26,3 +26,102 @@ jobs:
         run: node scripts/compare_dicts.js
       - name: Run full test suite
         run: npm test
+
+  verify-macos-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Homebrew Node to mirror Apple Silicon user environment
+        run: |
+          if [ -x /opt/homebrew/bin/brew ]; then
+            /opt/homebrew/bin/brew list node >/dev/null 2>&1 || /opt/homebrew/bin/brew install node
+          fi
+      - name: Install test dependencies
+        run: npm ci
+      - name: Validate dictionaries and run full macOS test suite
+        run: |
+          node scripts/compare_dicts.js
+          npm test
+      - name: End-to-end test install_macos_autowatcher.sh under real macOS /bin/bash 3.2 + LaunchDaemon
+        run: |
+          set -euo pipefail
+          # 1. Create realistic signed /Applications/Antigravity.app bundle with valid app.asar
+          sudo rm -rf "/Applications/Antigravity.app"
+          sudo mkdir -p "/Applications/Antigravity.app/Contents/MacOS" "/Applications/Antigravity.app/Contents/Resources"
+          sudo cp /bin/echo "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+          sudo tee "/Applications/Antigravity.app/Contents/Info.plist" >/dev/null <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>Antigravity</string>
+            <key>CFBundleIdentifier</key><string>com.google.antigravity.e2etest</string>
+            <key>CFBundleName</key><string>Antigravity</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>2.34.0</string>
+          </dict></plist>
+          EOF
+
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const entries = {
+            'package.json': '{"name":"antigravity","version":"2.34.0"}',
+            'dist/preload.js': 'const { contextBridge } = require("electron");\n// preload stub\n'
+          };
+          const header = { files: {} };
+          const bodies = [];
+          let offset = 0;
+          for (const [rel, text] of Object.entries(entries)) {
+            const parts = rel.split('/');
+            let node = header;
+            for (const p of parts.slice(0, -1)) {
+              node.files[p] ||= { files: {} };
+              node = node.files[p];
+            }
+            const buf = Buffer.from(text, 'utf8');
+            node.files[parts.at(-1)] = { size: buf.length, offset: String(offset) };
+            offset += buf.length;
+            bodies.push(buf);
+          }
+          const json = Buffer.from(JSON.stringify(header));
+          const payloadSize = Math.ceil((json.length + 4) / 4) * 4;
+          const prefix = Buffer.alloc(12 + payloadSize);
+          prefix.writeUInt32LE(4, 0);
+          prefix.writeUInt32LE(payloadSize + 4, 4);
+          prefix.writeUInt32LE(payloadSize, 8);
+          prefix.writeUInt32LE(json.length, 12);
+          json.copy(prefix, 16);
+          fs.writeFileSync('/tmp/e2e-app.asar', Buffer.concat([prefix, ...bodies]));
+          EOF
+          sudo mv /tmp/e2e-app.asar "/Applications/Antigravity.app/Contents/Resources/app.asar"
+          sudo /usr/bin/codesign --force --deep --sign - "/Applications/Antigravity.app"
+
+          # 2. Run actual installer via macOS system /bin/bash 3.2 (exact user path)
+          sudo /bin/bash ./install_macos_autowatcher.sh --daemon
+
+          # 3. Verify all postconditions
+          test -f "/Applications/Antigravity.app/Contents/Resources/app.asar.bak"
+          node -e '
+            const fs = require("node:fs");
+            const buf = fs.readFileSync("/Applications/Antigravity.app/Contents/Resources/app.asar");
+            if (!buf.includes(Buffer.from("命令選擇區"))) throw new Error("Missing zh-TW needle 命令選擇區");
+            if (!buf.includes(Buffer.from("渲染"))) throw new Error("Missing custom override 渲染");
+            console.log("VERIFIED: app.asar contains zh-TW localization and custom override!");
+          '
+          /usr/bin/codesign --verify --deep --strict "/Applications/Antigravity.app"
+          /usr/bin/plutil -lint "/Library/LaunchDaemons/com.antigravity.autolocalize.plist"
+          cat "/Library/Logs/Antigravity2TW/autolocalize.log"
+          if grep -E "Library not loaded|unbound variable|Abort trap" "/Library/Logs/Antigravity2TW/autolocalize.log"; then
+            echo "Found fatal error in macOS watcher log!" >&2
+            exit 1
+          fi
+
+          # 4. Verify clean uninstallation
+          sudo /bin/bash ./uninstall_macos_autowatcher.sh
+          sudo rm -rf "/Applications/Antigravity.app"

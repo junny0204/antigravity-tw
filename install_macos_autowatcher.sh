@@ -15,9 +15,14 @@ for arg in "$@"; do
     esac
 done
 
-if [ -f "$(dirname "$0")/auto_localize_watcher.js" ]; then
+IS_FD_SCRIPT=0
+case "$0" in
+    /dev/fd/*|/proc/self/fd/*|bash|-bash) IS_FD_SCRIPT=1 ;;
+esac
+
+if [ "$IS_FD_SCRIPT" -eq 0 ] && [ -f "$(dirname "$0")/auto_localize_watcher.js" ]; then
     DIR="$(cd "$(dirname "$0")" && pwd)"
-elif [ -f "$PWD/auto_localize_watcher.js" ]; then
+elif [ "$IS_FD_SCRIPT" -eq 0 ] && [ -f "$PWD/auto_localize_watcher.js" ]; then
     DIR="$PWD"
 else
     if [ "$EUID" -eq 0 ]; then
@@ -35,7 +40,7 @@ else
     else
         if [ -e "$DIR" ]; then
             BACKUP="${DIR}.bak-$(date +%Y%m%d%H%M%S)"
-            echo "📦 發現既有目錄，已安全移至 $BACKUP 後重新取得最新版..."
+            echo "📦 發現既有目錄，已安全移至 ${BACKUP} 後重新取得最新版..."
             mv "$DIR" "$BACKUP"
         fi
         if [ "$HAS_GIT" -eq 1 ]; then
@@ -54,22 +59,35 @@ fi
 
 cd "$DIR"
 
+ACTUAL_USER="${SUDO_USER:-$(/usr/bin/stat -f%Su /dev/console 2>/dev/null || echo "${USER:-}")}"
+REAL_HOME="$HOME"
+if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ] && [ "$ACTUAL_USER" != "loginwindow" ]; then
+    DSCL_HOME="$(/usr/bin/dscl . -read "/Users/$ACTUAL_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //' || true)"
+    [ -n "$DSCL_HOME" ] && REAL_HOME="$DSCL_HOME"
+fi
+
 # 尋找可用的 Node.js 執行檔 (支援官方獨立安裝、Homebrew、nvm、volta、fnm、mise、asdf 或環境 PATH)
 NODE_BIN=""
 CANDIDATES=(
     "/opt/homebrew/bin/node"
     "/usr/local/bin/node"
+    "$REAL_HOME/.volta/bin/node"
+    "$REAL_HOME/.fnm/current/bin/node"
+    "$REAL_HOME/.local/share/mise/shims/node"
+    "$REAL_HOME/.asdf/shims/node"
     "$HOME/.volta/bin/node"
     "$HOME/.fnm/current/bin/node"
     "$HOME/.local/share/mise/shims/node"
     "$HOME/.asdf/shims/node"
     "$(command -v node 2>/dev/null || true)"
 )
-if [ -d "$HOME/.nvm/versions/node" ]; then
-    while IFS= read -r nvm_node; do
-        [ -n "$nvm_node" ] && CANDIDATES+=("$nvm_node")
-    done < <(ls -1d "$HOME/.nvm/versions/node"/v*/bin/node 2>/dev/null | sort -r)
-fi
+for nvm_root in "$REAL_HOME/.nvm/versions/node" "$HOME/.nvm/versions/node"; do
+    if [ -d "$nvm_root" ]; then
+        while IFS= read -r nvm_node; do
+            [ -n "$nvm_node" ] && CANDIDATES+=("$nvm_node")
+        done < <(ls -1d "$nvm_root"/v*/bin/node 2>/dev/null | sort -r)
+    fi
+done
 for prev_node in /Library/Application\ Support/Antigravity2TW/runtime.*/node; do
     if [ -x "$prev_node" ]; then
         CANDIDATES+=("$prev_node")
@@ -176,7 +194,7 @@ if [ "$IS_DAEMON" -eq 1 ]; then
     
     RUNTIME="$(mktemp -d "$BASE/runtime.XXXXXX")"
     /bin/chmod 755 "$RUNTIME"
-    if /usr/bin/otool -L "$NODE_BIN" 2>/dev/null | /usr/bin/grep -q '@rpath/'; then
+    if xcode-select -p >/dev/null 2>&1 && /usr/bin/otool -L "$NODE_BIN" 2>/dev/null | /usr/bin/grep -q '@rpath/'; then
         # Homebrew 動態連結版 Node.js 依賴 @rpath/libnode.*.dylib，無法單獨複製執行檔，改用原本的 Node 路徑
         DAEMON_NODE_BIN="$NODE_BIN"
     else
@@ -241,19 +259,26 @@ PLIST_EOF
     /bin/rm -f "$PLIST_TMP"
     /bin/launchctl enable "system/$LABEL"
     echo "🌐 正在立即套用繁體中文介面（使用 ${DAEMON_NODE_BIN}）..."
+    APPLY_OK=1
     if ! "$DAEMON_NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
-        echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
+        APPLY_OK=0
+        echo "⚠️ 立即套用繁體中文時發生錯誤，請檢查上方輸出或日誌：${LOG_DIR}/autolocalize.log" >&2
     fi
     /bin/launchctl bootstrap system "$PLIST"
-    /bin/launchctl print "system/$LABEL"
+    /bin/launchctl print "system/$LABEL" >/dev/null
     for old_rt in "$BASE"/runtime.*; do
         if [ -d "$old_rt" ] && [ "$old_rt" != "$RUNTIME" ]; then
             /bin/rm -rf "$old_rt" 2>/dev/null || true
         fi
     done
-    echo "🎉 繁體中文與系統級背景守護已全部安裝完成！"
-    echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
-    echo "日誌路徑：$LOG_DIR/autolocalize.log"
+    if [ "$APPLY_OK" -eq 1 ]; then
+        echo "🎉 繁體中文與系統級背景守護已全部安裝完成！"
+        echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
+        echo "日誌路徑：${LOG_DIR}/autolocalize.log"
+    else
+        echo "❌ 背景守護已註冊，但本次套用繁體中文未成功，請檢視上方錯誤訊息或日誌：${LOG_DIR}/autolocalize.log" >&2
+        exit 1
+    fi
 else
     echo "👤 安裝為使用者級 LaunchAgent 守護服務..."
     if [ -f "$SYSTEM_PLIST" ]; then
@@ -321,12 +346,19 @@ PLIST_EOF
     chmod 644 "$PLIST"
     /bin/launchctl enable "gui/$CURRENT_UID/$LABEL" 2>/dev/null || true
     echo "🌐 正在立即套用繁體中文介面（使用 ${NODE_BIN}）..."
+    APPLY_OK=1
     if ! "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
-        echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
+        APPLY_OK=0
+        echo "⚠️ 立即套用繁體中文時發生錯誤，請檢查上方輸出或日誌：${LOG_DIR}/autolocalize.log" >&2
     fi
     /bin/launchctl bootstrap "gui/$CURRENT_UID" "$PLIST"
-    /bin/launchctl print "gui/$CURRENT_UID/$LABEL"
-    echo "🎉 繁體中文與背景守護已全部安裝完成！"
-    echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
-    echo "日誌路徑：$LOG_DIR/autolocalize.log"
+    /bin/launchctl print "gui/$CURRENT_UID/$LABEL" >/dev/null
+    if [ "$APPLY_OK" -eq 1 ]; then
+        echo "🎉 繁體中文與背景守護已全部安裝完成！"
+        echo "👉 請按 Cmd+Q 完全結束 Antigravity 再重新開啟，即可看到繁體中文介面。"
+        echo "日誌路徑：${LOG_DIR}/autolocalize.log"
+    else
+        echo "❌ 背景守護已註冊，但本次套用繁體中文未成功，請檢視上方錯誤訊息或日誌：${LOG_DIR}/autolocalize.log" >&2
+        exit 1
+    fi
 fi
