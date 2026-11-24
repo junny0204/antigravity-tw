@@ -57,8 +57,8 @@ function configureRepository({
         if (next !== raw) fs.writeFileSync(macInstallerPath, next);
     }
 
-    // Update README.md, README_TW.md & docs/RELEASING.md placeholders/links if present
-    for (const docName of ['README.md', 'README_TW.md', path.join('docs', 'RELEASING.md')]) {
+    // Update README.md & README_TW.md placeholders/links if present
+    for (const docName of ['README.md', 'README_TW.md']) {
         const docPath = path.join(repoRoot, docName);
         if (!fs.existsSync(docPath)) continue;
         let text = fs.readFileSync(docPath, 'utf8');
