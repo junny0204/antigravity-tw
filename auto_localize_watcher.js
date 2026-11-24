@@ -1280,18 +1280,25 @@ function manageWindowsShortcut(action, options = {}) {
     const cscriptPath = options.cscriptPath || path.win32.join(system32, 'cscript.exe');
     const managerPath = options.shortcutManagerPath || path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'manage_windows_shortcut.js');
     const shortcutSpec = options.shortcutPath || `__DESKTOP__\\${WINDOWS_SHORTCUT_NAME}`;
+    const cfgPath = path.join(os.tmpdir(), `ag_sc_cfg_${process.pid}_${crypto.randomBytes(4).toString('hex')}.txt`);
 
     if (action === 'remove') {
-        execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath], {
-            encoding: 'utf8',
-            stdio: 'ignore',
-            windowsHide: true,
-            env: {
-                ...process.env,
-                AG_SC_ACTION: 'remove',
-                AG_SC_PATH: shortcutSpec
-            }
-        });
+        const lines = ['remove', shortcutSpec].join('\r\n');
+        try {
+            fs.writeFileSync(cfgPath, encodeUtf16LeWithBom(lines));
+            execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath, cfgPath], {
+                encoding: 'utf8',
+                stdio: 'ignore',
+                windowsHide: true,
+                env: {
+                    ...process.env,
+                    AG_SC_ACTION: 'remove',
+                    AG_SC_PATH: shortcutSpec
+                }
+            });
+        } finally {
+            try { if (fs.existsSync(cfgPath)) fs.unlinkSync(cfgPath); } catch {}
+        }
         return { action, shortcutSpec };
     }
 
@@ -1300,21 +1307,27 @@ function manageWindowsShortcut(action, options = {}) {
     const shortcutArgs = `//B //NoLogo //E:JScript "${silentRunner}" "${nodePath}" "${smartLauncher}"`;
     const iconLocation = resolveWindowsAppIcon(options);
     const description = '啟動 Antigravity 2.0（啟動前自動檢查並套用繁體中文）';
-    execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath], {
-        encoding: 'utf8',
-        stdio: 'ignore',
-        windowsHide: true,
-        env: {
-            ...process.env,
-            AG_SC_ACTION: 'create',
-            AG_SC_PATH: shortcutSpec,
-            AG_SC_TARGET: wscriptPath,
-            AG_SC_ARGS: shortcutArgs,
-            AG_SC_WORKDIR: workingDir,
-            AG_SC_ICON: iconLocation,
-            AG_SC_DESC: description
-        }
-    });
+    const lines = ['create', shortcutSpec, wscriptPath, shortcutArgs, workingDir, iconLocation, description].join('\r\n');
+    try {
+        fs.writeFileSync(cfgPath, encodeUtf16LeWithBom(lines));
+        execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath, cfgPath], {
+            encoding: 'utf8',
+            stdio: 'ignore',
+            windowsHide: true,
+            env: {
+                ...process.env,
+                AG_SC_ACTION: 'create',
+                AG_SC_PATH: shortcutSpec,
+                AG_SC_TARGET: wscriptPath,
+                AG_SC_ARGS: shortcutArgs,
+                AG_SC_WORKDIR: workingDir,
+                AG_SC_ICON: iconLocation,
+                AG_SC_DESC: description
+            }
+        });
+    } finally {
+        try { if (fs.existsSync(cfgPath)) fs.unlinkSync(cfgPath); } catch {}
+    }
     return { action, shortcutSpec, shortcutArgs, iconLocation };
 }
 

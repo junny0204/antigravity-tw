@@ -1,24 +1,41 @@
 // Windows Script Host (cscript.exe //B //NoLogo //E:JScript) Desktop shortcut manager.
-// Parameters are passed via process environment variables (AG_SC_*) to avoid
-// WSH double-slash (//...) argument hijacking and Win32 quote/Unicode mangling:
-//   AG_SC_ACTION  : "create" | "remove"
-//   AG_SC_PATH    : target .lnk path (prefix "__DESKTOP__\" for active Desktop)
-//   AG_SC_TARGET  : TargetPath (create only)
-//   AG_SC_ARGS    : Arguments (create only)
-//   AG_SC_WORKDIR : WorkingDirectory (create only)
-//   AG_SC_ICON    : IconLocation (optional, create only)
-//   AG_SC_DESC    : Description (optional, create only)
+// Reads parameters from a UTF-16LE (BOM) config file passed as WScript.Arguments(0)
+// so CJK/Unicode shortcut names work on every Windows locale (including en-US CP1252).
+// Because wshom.ocx CreateShortcut().Save() fails silently when the .lnk filename
+// contains characters outside CP_ACP, we save to an ASCII temp .lnk first and move
+// it into place with Scripting.FileSystemObject (Unicode Win32 CopyFileW/DeleteFileW).
 var shell = WScript.CreateObject('WScript.Shell');
+var fso = WScript.CreateObject('Scripting.FileSystemObject');
 var env = shell.Environment('Process');
 
-function getParam(name) {
-    return String(env(name) || '');
-}
-
-var action = getParam('AG_SC_ACTION').toLowerCase();
-var spec = getParam('AG_SC_PATH');
-if (!action || !spec) {
-    WScript.Quit(2);
+function readConfig() {
+    if (WScript.Arguments.length >= 1) {
+        var cfgPath = String(WScript.Arguments(0));
+        if (cfgPath && fso.FileExists(cfgPath)) {
+            var ts = fso.OpenTextFile(cfgPath, 1, false, -1); // TristateTrue = UTF-16LE
+            var raw = ts.ReadAll();
+            ts.Close();
+            var lines = raw.replace(/\r\n/g, '\n').split('\n');
+            return {
+                action: String(lines[0] || '').toLowerCase(),
+                spec: String(lines[1] || ''),
+                targetPath: String(lines[2] || ''),
+                shortcutArgs: String(lines[3] || ''),
+                workingDir: String(lines[4] || ''),
+                iconLocation: String(lines[5] || ''),
+                description: String(lines[6] || '')
+            };
+        }
+    }
+    return {
+        action: String(env('AG_SC_ACTION') || '').toLowerCase(),
+        spec: String(env('AG_SC_PATH') || ''),
+        targetPath: String(env('AG_SC_TARGET') || ''),
+        shortcutArgs: String(env('AG_SC_ARGS') || ''),
+        workingDir: String(env('AG_SC_WORKDIR') || ''),
+        iconLocation: String(env('AG_SC_ICON') || ''),
+        description: String(env('AG_SC_DESC') || '')
+    };
 }
 
 function resolveShortcutPath(rawSpec) {
@@ -35,31 +52,49 @@ function resolveShortcutPath(rawSpec) {
     return rawSpec;
 }
 
-var shortcutPath = resolveShortcutPath(spec);
+var cfg = readConfig();
+if (!cfg.action || !cfg.spec) {
+    WScript.Quit(2);
+}
 
-if (action === 'create') {
-    var targetPath = getParam('AG_SC_TARGET');
-    var workingDir = getParam('AG_SC_WORKDIR');
-    if (!targetPath || !workingDir) {
+var shortcutPath = resolveShortcutPath(cfg.spec);
+
+if (cfg.action === 'create') {
+    if (!cfg.targetPath || !cfg.workingDir) {
         WScript.Quit(2);
     }
-    var sc = shell.CreateShortcut(shortcutPath);
-    sc.TargetPath = targetPath;
-    sc.Arguments = getParam('AG_SC_ARGS');
-    sc.WorkingDirectory = workingDir;
-    var iconLocation = getParam('AG_SC_ICON');
-    if (iconLocation) {
-        sc.IconLocation = iconLocation;
+    var tempFolder = fso.GetSpecialFolder(2);
+    var tempBase = '';
+    try { tempBase = String(tempFolder.ShortPath || ''); } catch (e) {}
+    if (!tempBase) tempBase = String(tempFolder.Path);
+    var tmpLnk = fso.BuildPath(tempBase, 'ag_sc_' + (new Date().getTime()) + '_' + Math.floor(Math.random() * 1000000) + '.lnk');
+
+    try {
+        var sc = shell.CreateShortcut(tmpLnk);
+        sc.TargetPath = cfg.targetPath;
+        sc.Arguments = cfg.shortcutArgs;
+        sc.WorkingDirectory = cfg.workingDir;
+        if (cfg.iconLocation) {
+            sc.IconLocation = cfg.iconLocation;
+        }
+        if (cfg.description) {
+            sc.Description = cfg.description;
+        }
+        sc.WindowStyle = 7;
+        sc.Save();
+        if (!fso.FileExists(tmpLnk)) {
+            WScript.Quit(3);
+        }
+        fso.CopyFile(tmpLnk, shortcutPath, true);
+    } finally {
+        try {
+            if (fso.FileExists(tmpLnk)) {
+                fso.DeleteFile(tmpLnk, true);
+            }
+        } catch (e) {}
     }
-    var description = getParam('AG_SC_DESC');
-    if (description) {
-        sc.Description = description;
-    }
-    sc.WindowStyle = 7;
-    sc.Save();
     WScript.Quit(0);
-} else if (action === 'remove') {
-    var fso = WScript.CreateObject('Scripting.FileSystemObject');
+} else if (cfg.action === 'remove') {
     if (fso.FileExists(shortcutPath)) {
         fso.DeleteFile(shortcutPath, true);
     }

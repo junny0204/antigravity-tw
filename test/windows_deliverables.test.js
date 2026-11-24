@@ -239,26 +239,27 @@ test('watcher Windows Task Scheduler XML installer/uninstaller handles spaces, C
     assert.equal(resMissing.deleted, false);
 });
 
-test('Windows manage_windows_shortcut.js creates and removes a real .lnk shortcut with CJK name', { skip: process.platform !== 'win32' }, t => {
+test('Windows manage_windows_shortcut.js creates and removes a real .lnk shortcut with cross-locale Unicode CJK name', { skip: process.platform !== 'win32' }, t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-lnk-test-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const lnkPath = path.join(root, 'Antigravity (繁中啟動).lnk');
+    for (const fileName of ['Antigravity (繁中啟動).lnk', 'Antigravity (繁中啟動 한국어).lnk']) {
+        const lnkPath = path.join(root, fileName);
+        watcher.manageWindowsShortcut('create', {
+            shortcutPath: lnkPath,
+            nodePath: process.execPath,
+            scriptPath: path.join(repo, 'auto_localize_watcher.js'),
+            workingDir: repo,
+            iconLocation: ''
+        });
+        assert.equal(fs.existsSync(lnkPath), true, `Shortcut .lnk must be created by WSH JScript: ${fileName}`);
+        assert.ok(fs.statSync(lnkPath).size > 0);
 
-    watcher.manageWindowsShortcut('create', {
-        shortcutPath: lnkPath,
-        nodePath: process.execPath,
-        scriptPath: path.join(repo, 'auto_localize_watcher.js'),
-        workingDir: repo,
-        iconLocation: ''
-    });
-    assert.equal(fs.existsSync(lnkPath), true, 'Shortcut .lnk must be created by WSH JScript');
-    assert.ok(fs.statSync(lnkPath).size > 0);
-
-    watcher.manageWindowsShortcut('remove', {
-        shortcutPath: lnkPath,
-        scriptPath: path.join(repo, 'auto_localize_watcher.js')
-    });
-    assert.equal(fs.existsSync(lnkPath), false, 'Shortcut .lnk must be removed cleanly');
+        watcher.manageWindowsShortcut('remove', {
+            shortcutPath: lnkPath,
+            scriptPath: path.join(repo, 'auto_localize_watcher.js')
+        });
+        assert.equal(fs.existsSync(lnkPath), false, `Shortcut .lnk must be removed cleanly: ${fileName}`);
+    }
 });
 
 test('stress: CLI interactive brand modes, CJK+space paths, restore, and missing backup guard', async t => {
