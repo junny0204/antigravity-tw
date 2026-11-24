@@ -1009,10 +1009,21 @@ function resolveCurrentWindowsUserId() {
     }
 }
 
-function buildWindowsTaskXml({ nodePath, scriptPath, workingDir, runLevel = 'LeastPrivilege', userId = resolveCurrentWindowsUserId() }) {
-    const command = escapeXml(nodePath);
-    const args = escapeXml(`"${scriptPath}"`);
-    const cwd = escapeXml(workingDir || path.dirname(scriptPath));
+function buildWindowsTaskXml({
+    nodePath,
+    scriptPath,
+    workingDir,
+    runLevel = 'LeastPrivilege',
+    userId = resolveCurrentWindowsUserId(),
+    wscriptPath = null,
+    launcherPath = null
+}) {
+    const winDir = workingDir || path.win32.dirname(scriptPath);
+    const resolvedWscript = wscriptPath || path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
+    const resolvedLauncher = launcherPath || path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'run_silent_watcher.js');
+    const command = escapeXml(resolvedWscript);
+    const args = escapeXml(`//B //NoLogo //E:JScript "${resolvedLauncher}" "${nodePath}" "${scriptPath}"`);
+    const cwd = escapeXml(winDir);
     const safeRunLevel = runLevel === 'HighestAvailable' ? 'HighestAvailable' : 'LeastPrivilege';
     const safeUserId = userId ? escapeXml(String(userId).trim()) : '';
     const logonUserLine = safeUserId ? `      <UserId>${safeUserId}</UserId>` : null;

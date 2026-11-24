@@ -11,6 +11,7 @@ const { configureRepository } = require('../scripts/configure_repo');
 const {
     applyTwGlossary,
     mergeDictionaries,
+    mergeRuntimeRules,
     diffEngineHashes,
     bumpPatchSemver,
     runSync
@@ -142,11 +143,12 @@ test('runSync detects dict-only auto-publish vs engine-change PR review', async 
     const writtenTw = JSON.parse(fs.readFileSync(path.join(projDir, 'dicts_tw', 'common.json'), 'utf8'));
     assert.equal(writtenTw['Manage License'], '管理授權');
 
-    // Modify upstream engine JS -> must block auto-publish and require PR review
+    // Modify upstream engine JS -> must block auto-publish and require PR review,
+    // and once written into the PR branch state, subsequent runs at the same commit do not loop
     fs.writeFileSync(path.join(qDir, 'src/preload_runtime.js'), '// preload_runtime.js v2');
     const third = await runSync({
         repoRoot: projDir,
-        write: false,
+        write: true,
         bumpTranslationVersion: true,
         qqxpeeDir: qDir,
         atonnyshenDir: aDir
@@ -155,6 +157,27 @@ test('runSync detects dict-only auto-publish vs engine-change PR review', async 
     assert.deepEqual(third.changedEngineFiles, ['src/preload_runtime.js']);
     assert.equal(third.needsReview, true);
     assert.equal(third.autoPublishAllowed, false);
+
+    const fourth = await runSync({
+        repoRoot: projDir,
+        write: false,
+        qqxpeeDir: qDir,
+        atonnyshenDir: aDir
+    });
+    assert.equal(fourth.engineChanged, false, 'Recorded engineHashes in merged PR must prevent infinite PR re-opening');
+});
+
+test('mergeRuntimeRules applies personal termReplacements to dynamic rules', () => {
+    const sample = {
+        schemaVersion: 1,
+        protected: { lowerWordsExclude: [], modelEffortLabels: [], slashCommands: [] },
+        scopedMaps: { swarm: { Render: { sc: '渲染', tw: '算繪' } } },
+        dynamicRules: [{ id: 'r1', pattern: '^Render\\s+(.+)$', flags: 'i', sc: '渲染 {1}', tw: '算繪 {1}' }],
+        attrDynamicRules: []
+    };
+    const merged = mergeRuntimeRules(sample, sample, { termReplacements: { '算繪': '渲染' } });
+    assert.equal(merged.scopedMaps.swarm.Render.tw, '渲染');
+    assert.equal(merged.dynamicRules[0].tw, '渲染 {1}');
 });
 
 test('configureRepository updates config, macOS installer, and README atomically', (t) => {

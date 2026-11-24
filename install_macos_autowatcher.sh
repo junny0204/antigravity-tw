@@ -152,17 +152,27 @@ if [ "$MODE" = "daemon" ]; then
 elif [ "$MODE" = "user" ]; then
     IS_DAEMON=0
 else
-    # auto mode：若已存在系統級 LaunchDaemon，預設沿用並升級該服務，避免新舊雙服務同時覆寫 app.asar
-    if [ "$EUID" -eq 0 ] || [ -f "$SYSTEM_PLIST" ]; then
+    # auto mode：優先檢查目標 App 真實擁有者 UID，避免尚未開啟「App 管理」時誤判為需要 root LaunchDaemon
+    TARGET_APP="/Applications/Antigravity.app"
+    if [ ! -e "$TARGET_APP" ] && [ -e "/Applications/Antigravity IDE.app" ]; then
+        TARGET_APP="/Applications/Antigravity IDE.app"
+    fi
+    if [ "$EUID" -eq 0 ]; then
         IS_DAEMON=1
-    else
-        TARGET_ASAR="/Applications/Antigravity.app/Contents/Resources/app.asar"
-        if [ -w "/Applications/Antigravity.app" ] || [ -w "$TARGET_ASAR" ] || [ ! -e "/Applications/Antigravity.app" ]; then
+    elif [ -e "$TARGET_APP" ]; then
+        APP_OWNER_UID="$(/usr/bin/stat -f%u "$TARGET_APP" 2>/dev/null || echo 0)"
+        if [ "$APP_OWNER_UID" = "$CURRENT_UID" ]; then
+            IS_DAEMON=0
+        elif [ -w "$TARGET_APP" ] || [ -w "$TARGET_APP/Contents/Resources/app.asar" ]; then
             IS_DAEMON=0
         else
-            echo "偵測到目標應用程式需要管理員權限，嘗試提權..."
+            echo "偵測到目標應用程式由系統管理員擁有，嘗試提權..."
             exec sudo /bin/bash "$DIR/install_macos_autowatcher.sh" --daemon
         fi
+    elif [ -f "$SYSTEM_PLIST" ]; then
+        IS_DAEMON=1
+    else
+        IS_DAEMON=0
     fi
 fi
 

@@ -26,14 +26,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
+          package-manager-cache: false
 
       - name: Install test dependencies
         run: npm ci
@@ -120,8 +121,14 @@ jobs:
           - 僅含純翻譯資料包（\`${ASSET_PREFIX}-${TAG}.zip\`），Windows / macOS 背景守護將於 24 小時內驗證 SHA-256 後自動套用。"
 
           mkdir -p "$RUNNER_TEMP/preflight"
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"${TAG}\")" > "$RUNNER_TEMP/preflight/release.json"
+          for attempt in 1 2 3 4 5; do
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"${TAG}\")" > "$RUNNER_TEMP/preflight/release.json" || true
+            if [ -s "$RUNNER_TEMP/preflight/release.json" ] && grep -q '"digest":"sha256:' "$RUNNER_TEMP/preflight/release.json"; then
+              break
+            fi
+            sleep 2
+          done
           gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" \
             --pattern "${ASSET_PREFIX}-${TAG}.zip" --dir "$RUNNER_TEMP/preflight"
           node scripts/check_release_assets.js "${TAG}" \

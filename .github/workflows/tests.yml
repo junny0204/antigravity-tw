@@ -14,12 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          package-manager-cache: false
       - name: Install test dependencies
         run: npm ci
       - name: Validate Taiwan dictionaries and runtime rules
@@ -27,16 +28,36 @@ jobs:
       - name: Run full test suite
         run: npm test
 
+  verify-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install test dependencies
+        run: npm ci
+      - name: Validate Taiwan dictionaries and runtime rules
+        run: node scripts/compare_dicts.js
+      - name: Run Windows deliverables, sync, and core suites
+        run: |
+          node --test --test-concurrency=1 test/auto_updater.test.js test/engine.test.js test/installer_regressions.test.js test/release_asset_policy.test.js test/translation_updates.test.js test/upstream_sync.test.js test/windows_deliverables.test.js
+
   verify-macos-e2e:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          package-manager-cache: false
       - name: Install Homebrew Node to mirror Apple Silicon user environment
         run: |
           if [ -x /opt/homebrew/bin/brew ]; then
@@ -51,7 +72,6 @@ jobs:
       - name: End-to-end test install_macos_autowatcher.sh under real macOS /bin/bash 3.2 + LaunchDaemon
         run: |
           set -euo pipefail
-          # 1. Create realistic signed /Applications/Antigravity.app bundle with valid app.asar
           sudo rm -rf "/Applications/Antigravity.app"
           sudo mkdir -p "/Applications/Antigravity.app/Contents/MacOS" "/Applications/Antigravity.app/Contents/Resources"
           sudo cp /bin/echo "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
@@ -69,7 +89,6 @@ jobs:
 
           node - <<'EOF'
           const fs = require('node:fs');
-          const { execFileSync } = require('node:child_process');
           const entries = {
             'package.json': '{"name":"antigravity","version":"2.34.0"}',
             'dist/preload.js': 'const { contextBridge } = require("electron");\n// preload stub\n'
@@ -102,10 +121,8 @@ jobs:
           sudo mv /tmp/e2e-app.asar "/Applications/Antigravity.app/Contents/Resources/app.asar"
           sudo /usr/bin/codesign --force --deep --sign - "/Applications/Antigravity.app"
 
-          # 2. Run actual installer via macOS system /bin/bash 3.2 (exact user path)
           sudo /bin/bash ./install_macos_autowatcher.sh --daemon
 
-          # 3. Verify all postconditions
           test -f "/Applications/Antigravity.app/Contents/Resources/app.asar.bak"
           node -e '
             const fs = require("node:fs");
@@ -116,12 +133,10 @@ jobs:
           '
           /usr/bin/codesign --verify --deep --strict "/Applications/Antigravity.app"
           /usr/bin/plutil -lint "/Library/LaunchDaemons/com.antigravity.autolocalize.plist"
-          cat "/Library/Logs/Antigravity2TW/autolocalize.log"
           if grep -E "Library not loaded|unbound variable|Abort trap" "/Library/Logs/Antigravity2TW/autolocalize.log"; then
             echo "Found fatal error in macOS watcher log!" >&2
             exit 1
           fi
 
-          # 4. Verify clean uninstallation
           sudo /bin/bash ./uninstall_macos_autowatcher.sh
           sudo rm -rf "/Applications/Antigravity.app"

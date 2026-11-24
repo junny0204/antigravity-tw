@@ -220,7 +220,42 @@ async function loadUpstreamFromGitHub(repoSlug, branch = 'main', { includeEngine
     return { sha, dicts, dictsTw, engineHashes, runtimeRules };
 }
 
-function mergeRuntimeRules(currentRules, upstreamRules) {
+function applyPersonalOverridesToRules(rulesObj, overrides) {
+    if (!rulesObj || typeof rulesObj !== 'object' || !overrides || typeof overrides !== 'object') return;
+    const termReplacements = overrides.termReplacements && typeof overrides.termReplacements === 'object'
+        ? Object.entries(overrides.termReplacements)
+            .filter(([k, v]) => typeof k === 'string' && k.length > 0 && typeof v === 'string')
+            .sort((a, b) => b[0].length - a[0].length)
+        : [];
+    if (termReplacements.length === 0) return;
+
+    const replaceTw = (text) => {
+        if (typeof text !== 'string') return text;
+        let out = text;
+        for (const [from, to] of termReplacements) {
+            if (out.includes(from)) out = out.split(from).join(to);
+        }
+        return out;
+    };
+
+    if (rulesObj.scopedMaps && typeof rulesObj.scopedMaps === 'object') {
+        for (const scope of Object.values(rulesObj.scopedMaps)) {
+            if (!scope || typeof scope !== 'object') continue;
+            for (const pair of Object.values(scope)) {
+                if (pair && typeof pair.tw === 'string') pair.tw = replaceTw(pair.tw);
+            }
+        }
+    }
+    for (const section of ['dynamicRules', 'attrDynamicRules']) {
+        if (Array.isArray(rulesObj[section])) {
+            for (const rule of rulesObj[section]) {
+                if (rule && typeof rule.tw === 'string') rule.tw = replaceTw(rule.tw);
+            }
+        }
+    }
+}
+
+function mergeRuntimeRules(currentRules, upstreamRules, overrides = null) {
     const base = upstreamRules
         ? JSON.parse(JSON.stringify(upstreamRules))
         : JSON.parse(JSON.stringify(currentRules || {}));
@@ -236,6 +271,7 @@ function mergeRuntimeRules(currentRules, upstreamRules) {
             }
         }
     }
+    applyPersonalOverridesToRules(base, overrides);
     validateRuntimeRulesObject(base);
     return base;
 }
@@ -365,7 +401,7 @@ async function runSync({
 
     const currentRulesPath = path.join(repoRoot, 'rules', 'runtime_rules.json');
     const currentRules = loadJsonIfExists(currentRulesPath, null);
-    const mergedRules = mergeRuntimeRules(currentRules, atonnyshen.runtimeRules);
+    const mergedRules = mergeRuntimeRules(currentRules, atonnyshen.runtimeRules, overrides);
 
     // Validate complete candidate in temp dir before touching real repo files
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agtw-sync-verify-'));
@@ -427,9 +463,7 @@ async function runSync({
         qqxpee: {
             repo: repoConfig.upstreams.qqxpee.repo,
             sha: qqxpee.sha,
-            engineHashes: engineChanged && prevState && prevState.qqxpee
-                ? prevState.qqxpee.engineHashes // Keep baseline hashes until human merges engine PR!
-                : qqxpee.engineHashes
+            engineHashes: qqxpee.engineHashes
         },
         atonnyshen: {
             repo: repoConfig.upstreams.atonnyshen.repo,

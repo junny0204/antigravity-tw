@@ -188,8 +188,8 @@ test('watcher Windows Task Scheduler XML installer/uninstaller handles spaces, C
     assert.match(decodedXml, /<Interval>PT5M<\/Interval>/);
     assert.match(decodedXml, /<LogonType>InteractiveToken<\/LogonType>/);
     assert.match(decodedXml, /<RunLevel>LeastPrivilege<\/RunLevel>/, 'Persistent tasks must not run elevated code from a writable checkout');
-    assert.match(decodedXml, /<Command>C:\\Program Files\\nodejs\\node\.exe<\/Command>/);
-    assert.match(decodedXml, /<Arguments>&quot;C:\\Users\\測試 &amp; 使用者\\Desktop\\antigravity2-TW\\auto_localize_watcher\.js&quot;<\/Arguments>/);
+    assert.match(decodedXml, /<Command>.*\\System32\\wscript\.exe<\/Command>/i);
+    assert.match(decodedXml, /<Arguments>\/\/B \/\/NoLogo \/\/E:JScript &quot;C:\\Users\\測試 &amp; 使用者\\Desktop\\antigravity2-TW\\scripts\\run_silent_watcher\.js&quot; &quot;C:\\Program Files\\nodejs\\node\.exe&quot; &quot;C:\\Users\\測試 &amp; 使用者\\Desktop\\antigravity2-TW\\auto_localize_watcher\.js&quot;<\/Arguments>/);
 
     assert.equal(calls.length, 2);
     assert.equal(calls[0].bin, 'schtasks.exe');
