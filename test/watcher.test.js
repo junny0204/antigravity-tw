@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { checkAndLocalizeApp, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash, rotateLogFileInPlace, detectRecentAppLaunchTrigger, refreshTranslationsAndReapply } = require('../auto_localize_watcher');
+const { checkAndLocalizeApp, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash, rotateLogFileInPlace, detectRecentAppLaunchTrigger, shouldForceAppLaunchCheck, refreshTranslationsAndReapply } = require('../auto_localize_watcher');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-watcher-'));
@@ -903,6 +903,112 @@ test('refreshTranslationsAndReapply schedules short retry when blocked by run.lo
     } finally {
         release();
     }
+});
+
+test('shouldForceAppLaunchCheck enforces 30m anti-storm guard and retryScheduled backoff, and works via onAppLaunch', async t => {
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-win-launch-check-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const stateDir = path.join(root, '.watcher-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const cacheFile = path.join(stateDir, 'update_check.json');
+    const now = Date.now();
+
+    assert.equal(shouldForceAppLaunchCheck({ cacheFile, nowMs: now }), false, 'missing cache needs no explicit override');
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: now - 10 * 60 * 1000 }));
+    assert.equal(shouldForceAppLaunchCheck({ cacheFile, nowMs: now }), false, 'within 30m anti-storm window');
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: now - 45 * 60 * 1000, retryScheduled: true }));
+    assert.equal(shouldForceAppLaunchCheck({ cacheFile, nowMs: now }), false, 'never bypass retryScheduled cooldown');
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: now - 45 * 60 * 1000 }));
+    assert.equal(shouldForceAppLaunchCheck({ cacheFile, nowMs: now }), true, 'older than 30m must force check');
+
+    const prevEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    t.after(() => {
+        if (prevEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prevEnv;
+    });
+    let seenForce = null;
+    await refreshTranslationsAndReapply({
+        targetDir: root,
+        stateDir,
+        currentVersion: '1.0.6',
+        onAppLaunch: true,
+        updater: {
+            readActiveTranslation: () => null,
+            checkUpdate: async (opts) => { seenForce = opts.force; return { hasUpdate: false }; }
+        }
+    });
+    assert.equal(seenForce, true, '--on-app-launch must pass force: true when past 30m guard');
+});
+
+test('launchAntigravityTw handles fast path, official update pre-launch patch, busy lock, and fail-open', t => {
+    const { launchAntigravityTw } = require('../scripts/launch_antigravity_tw');
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-smart-launch-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const appPath = path.join(root, 'Antigravity');
+    const resDir = path.join(appPath, 'resources');
+    const stateDir = path.join(root, '.watcher-state');
+    fs.mkdirSync(resDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    const exePath = path.join(appPath, 'Antigravity.exe');
+    const asarPath = path.join(resDir, 'app.asar');
+    fs.writeFileSync(exePath, 'stub-exe');
+    fs.writeFileSync(asarPath, 'english-official-v2351');
+
+    // 1. Official update detected & unlocked -> patches BEFORE launching exe
+    const order = [];
+    const res1 = launchAntigravityTw({
+        baseDir: root,
+        stateDir,
+        passArgs: ['--new-window'],
+        getAppInfoFn: () => ({ appPath, asarPath }),
+        isBusyFn: () => false,
+        localizeFn: () => { order.push('localize'); return true; },
+        shouldBgCheckFn: () => true,
+        spawnFn: (bin, args, opts) => {
+            order.push({ bin, args, windowsHide: opts.windowsHide });
+            return { unref() {} };
+        },
+        logFn: () => {}
+    });
+    assert.equal(res1.launched, true);
+    assert.equal(res1.localizedBeforeLaunch, true);
+    assert.equal(res1.backgroundCheckSpawned, true);
+    assert.equal(order[0], 'localize', 'must localize BEFORE launching Antigravity.exe');
+    assert.equal(order[1].bin, exePath);
+    assert.deepEqual(order[1].args, ['--new-window']);
+    assert.equal(order[1].windowsHide, false);
+    assert.equal(order[2].args[1], '--on-app-launch');
+    assert.equal(order[2].windowsHide, true);
+
+    // 2. Busy lock -> skips patching, still launches exe
+    let localizeCalls = 0;
+    const res2 = launchAntigravityTw({
+        baseDir: root,
+        stateDir,
+        getAppInfoFn: () => ({ appPath, asarPath }),
+        isBusyFn: () => true,
+        localizeFn: () => { localizeCalls++; return true; },
+        shouldBgCheckFn: () => false,
+        spawnFn: () => ({ unref() {} }),
+        logFn: () => {}
+    });
+    assert.equal(res2.launched, true);
+    assert.equal(localizeCalls, 0);
+
+    // 3. Fail-open -> localization error never blocks launching Antigravity.exe
+    const res3 = launchAntigravityTw({
+        baseDir: root,
+        stateDir,
+        getAppInfoFn: () => ({ appPath, asarPath }),
+        isBusyFn: () => false,
+        localizeFn: () => { throw new Error('EPERM Program Files'); },
+        shouldBgCheckFn: () => false,
+        spawnFn: () => ({ unref() {} }),
+        logFn: () => {}
+    });
+    assert.equal(res3.launched, true);
+    assert.match(res3.localizeError, /EPERM Program Files/);
 });
 
 

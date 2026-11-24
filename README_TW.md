@@ -9,8 +9,10 @@
 1. **原版 App 直接變繁中**：修改本機 `resources/app.asar` 並自動備份 `app.asar.bak`，不會多出第二個 App，也不影響登入狀態、專案與對話紀錄；隨時可一鍵還原官方英文。
 2. **執行期零外部依賴**：安裝與常駐核心皆為純 Node.js（需求 Node.js `>= 22.12.0`），執行期無須 `npm install`。
 3. **跨平台低擾動背景守護（Windows & macOS）**：
-   - **開機登入與每週自動檢查（取代高頻輪詢）**：電腦重開機登入後強制檢查一次（確保開機使用時就是最新狀態），平時改為**每週一次**背景巡檢（Windows 採 `ReplaceFileW` 單步原子置換＋失敗 15 分鐘重試；macOS 採 `renamex_np` 原子交換＋`Info.plist` 校驗同步＋本機 ad-hoc 簽章，並透過零耗電 `WatchPaths` 在官方更新與開啟 Antigravity 時即時觸發）。
-   - **純翻譯資料自動更新**：僅連線至 **本倉庫（`junny0204/antigravity-tw`）** 檢查新版純翻譯資料包（每週定期檢查，重開機或 macOS 開啟 App 時亦會強制核對），強制驗證 SHA-256 與詞庫安全規則後自動套用（**絕不自動下載執行遠端程式碼**）。
+   - **開機登入、解鎖與每週自動檢查（取代高頻輪詢）**：電腦重開機登入後強制檢查一次，平時改為**每週一次**背景巡檢。
+     - **Windows**：除了開機登入與每週一排程外，還會在**螢幕解鎖（`SessionUnlock`）**時靜默巡檢，並於桌面自動建立 **`Antigravity (繁中啟動).lnk`** 智慧捷徑——點它啟動時若官方剛更新覆蓋成英文，會先自動補套繁體中文再開啟 App（平常已是繁中則毫秒秒開，完全免常駐背景程式），底層採 `ReplaceFileW` 單步原子置換＋失敗 15 分鐘重試。
+     - **macOS**：採 `renamex_np` 原子交換＋`Info.plist` 校驗同步＋本機 ad-hoc 簽章，並透過零耗電 `WatchPaths` 在官方更新與開啟 Antigravity 時即時觸發。
+   - **純翻譯資料自動更新**：僅連線至 **本倉庫（`junny0204/antigravity-tw`）** 檢查新版純翻譯資料包（每週定期檢查，重開機或開啟 App 時亦會強制核對），強制驗證 SHA-256 與詞庫安全規則後自動套用（**絕不自動下載執行遠端程式碼**）。
 4. **上游自動同步流水線（GitHub Actions）**：
    - 每日自動比對 `qqxpee/antigravity2-cn` 與 `atonnyshen/antigravity2-TW` 更新。
    - 透過 `config/tw_glossary.json` 自動將新詞條轉換為台灣用語，並套用你的 `config/tw_overrides.json` 個人覆蓋設定。
@@ -28,8 +30,8 @@
    ```
 2. **完全退出 Antigravity**（含系統匣右下角圖示右鍵結束）。
 3. 進入資料夾，點兩下 **`點兩下安裝繁體中文.bat`** 完成繁體中文化。
-4. 啟用背景常駐自動更新：點兩下 **`點兩下安裝Windows背景守護.bat`**。
-5. 重新打開原本的 **Antigravity** 即可看到繁體中文介面。
+4. 啟用背景常駐自動更新：點兩下 **`點兩下安裝Windows背景守護.bat`**（會註冊排程並在桌面建立 **`Antigravity (繁中啟動)`** 捷徑）。
+5. 日後直接點桌面的 **`Antigravity (繁中啟動)`**（或原本的 Antigravity）即可看到繁體中文介面；若官方剛好更新覆蓋成英文，點繁中啟動捷徑會先自動補翻再開啟。
 
 - 卸載背景守護：點兩下 **`點兩下卸載Windows背景守護.bat`**
 - 還原官方英文：點兩下 **`點兩下還原官方英文.bat`**
@@ -56,7 +58,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/junny0204/antigravity-tw/mai
 2. 啟用背景常駐自動更新：點兩下 **`點兩下安裝macOS背景守護.command`**（或在終端機以 bash 執行 `install_macos_autowatcher.sh`）。
 3. 按 `Cmd + Q` 完全退出 Antigravity 並重新開啟即可生效。
 
-> 註：若 Antigravity 安裝於 `/Applications/` 且系統提示權限不足，請輸入管理員密碼或於「系統設定 → 隱私權與安全性 → App 管理」授權。若直接從瀏覽器下載 ZIP 解壓而遭 macOS Gatekeeper 攔截，可對 `.command` 檔按右鍵 →「開啟」，或改用上方終端機一行指令。
+> 註：若 Antigravity 安裝於 `/Applications/` 且系統提示權限不足，請輸入管理員密碼或於「系統設定 → 隱私權與安全性 → App 管理」授權。若直接從瀏覽器下載 ZIP 解壓而遭 macOS Gatekeeper 攔截，可對 `.command` 檔按右鍵 →「開啟」，或改用上方終端機一行指令。另因 macOS 本機重新簽章後系統內建更新器會略過自動覆寫，若日後想升級 macOS 版 Antigravity，直接從官網下載新版 DMG 覆蓋至 `/Applications/`，背景守護便會自動重新套用繁體中文。
 
 - 卸載背景守護：點兩下 **`點兩下卸載macOS背景守護.command`**
 - 還原官方英文：點兩下 **`點兩下還原官方英文.command`**

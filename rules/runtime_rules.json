@@ -627,6 +627,92 @@
       },
       "sc": "适用于 {1} 项目",
       "tw": "適用於 {1} 專案"
+    },
+    {
+      "id": "v235-all-permissions-will-be-revoked",
+      "pattern": "^All (.+?) will be revoked\\. The plugin will ask before doing this again\\.$",
+      "flags": "",
+      "sc": "将撤销全部 {1}。插件在再次执行此操作前会先征求您的同意。",
+      "tw": "將撤銷全部 {1}。外掛程式在再次執行此操作前會先徵求您的同意。"
+    },
+    {
+      "id": "v235-dismiss-target",
+      "pattern": "^Dismiss:\\s*(.+)$",
+      "flags": "",
+      "sc": "忽略：{1}",
+      "tw": "關閉：{1}"
+    },
+    {
+      "id": "v235-move-to-resolved",
+      "pattern": "^Move to Resolved$",
+      "flags": "",
+      "sc": "移动到“已解决”",
+      "tw": "移至「已解決」"
+    },
+    {
+      "id": "v235-move-to-inbox",
+      "pattern": "^Move to Inbox$",
+      "flags": "",
+      "sc": "移动到“收件箱”",
+      "tw": "移至「收件匣」"
+    },
+    {
+      "id": "v235-move-to-dest",
+      "pattern": "^Move to\\s+(.+)$",
+      "flags": "",
+      "transforms": {
+        "1": "lookupOrKeep"
+      },
+      "sc": "移动到 {1}",
+      "tw": "移至 {1}"
+    },
+    {
+      "id": "v235-new-kind-ellipsis",
+      "pattern": "^New\\s+(.+?)\\.\\.\\.$",
+      "flags": "",
+      "transforms": {
+        "1": "lookupOrKeep"
+      },
+      "sc": "新建 {1}...",
+      "tw": "新增 {1}..."
+    },
+    {
+      "id": "v235-no-matching-languages",
+      "pattern": "^No matching languages for \"(.+)\"$",
+      "flags": "",
+      "sc": "未找到与“{1}”匹配的语言",
+      "tw": "找不到與「{1}」相符的語言"
+    },
+    {
+      "id": "v235-remove-from-inbox",
+      "pattern": "^Remove from Inbox$",
+      "flags": "",
+      "sc": "从“收件箱”移除",
+      "tw": "從「收件匣」移除"
+    },
+    {
+      "id": "v235-remove-from-target",
+      "pattern": "^Remove from\\s+(.+)$",
+      "flags": "",
+      "transforms": {
+        "1": "lookupOrKeep"
+      },
+      "sc": "从 {1} 移除",
+      "tw": "從 {1} 移除"
+    },
+    {
+      "id": "v235-revoke-all-target",
+      "pattern": "^Revoke all:\\s*(.+)$",
+      "flags": "",
+      "sc": "全部撤销：{1}",
+      "tw": "全部撤銷：{1}"
+    },
+    {
+      "id": "v235-revoke-target",
+      "pattern": "^Revoke:\\s*(.+)$",
+      "flags": "",
+      "sc": "撤销：{1}",
+      "tw": "撤銷：{1}"
     }
   ],
   "attrDynamicRules": [

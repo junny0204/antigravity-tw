@@ -1,14 +1,14 @@
 {
-  "translationVersion": "1.0.5",
-  "lastSyncedAt": "2026-11-24T02:25:54.883Z",
+  "translationVersion": "1.0.6",
+  "lastSyncedAt": "2026-11-24T23:18:14.178Z",
   "qqxpee": {
     "repo": "qqxpee/antigravity2-cn",
-    "sha": "ae290fc0b040f86a1fe154e6f66dbbf85d1da510",
+    "sha": "710b13fb8c887ef33416cdf5e8441d1ea173422f",
     "engineHashes": {
-      "localization_engine.js": "3f67e812f78a341cfc4fb17faef8d3db1a81eb20bdfe7c79cd879d15511648f9",
-      "src/asar_patcher.js": "8a2151bc55ee7cd5db32587fa3ace45d2dfb1210062196d468922d6713a573e9",
-      "src/main_patches.js": "93e57b166705f182670cc8af5c7a99dd372615f4d7c01e47827db336515536d7",
-      "src/preload_runtime.js": "b7ede3214d019006f367c2b5750cd29ce4e75661d85d91b6a56afe46c57adb3a"
+      "localization_engine.js": "3f06f6a42ea0dbaa7c719f8565af4763371b4fc719972438a066d2df97efffcf",
+      "src/asar_patcher.js": "33d7e0229e6c08c91d18a82056a3cc3e2d1c4c35e57ab04fe42bbbe688a64cf3",
+      "src/main_patches.js": "e1ad8a79c90a864a8d6a00c1a1cce97ce4966d69796ad0b22c702c28cfff7830",
+      "src/preload_runtime.js": "fd0eae717a48f2ac7e6fce6eafa1e7570303004160264815c5ecd82878f43536"
     }
   },
   "atonnyshen": {

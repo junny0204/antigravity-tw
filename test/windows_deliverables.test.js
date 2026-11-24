@@ -161,8 +161,8 @@ test('watcher Windows Task Scheduler XML installer/uninstaller handles spaces, C
     const calls = [];
     let writtenXmlBuf = null;
     let writtenXmlPath = null;
-    const fakeExec = (bin, args) => {
-        calls.push({ bin, args });
+    const fakeExec = (bin, args, opts) => {
+        calls.push({ bin, args, opts });
         return '';
     };
 
@@ -187,46 +187,78 @@ test('watcher Windows Task Scheduler XML installer/uninstaller handles spaces, C
     assert.match(decodedXml, /^<\?xml version="1\.0" encoding="UTF-16"\?>\r\n/);
     assert.match(decodedXml, /<CalendarTrigger>\r\n\s+<StartBoundary>2026-01-05T09:00:00<\/StartBoundary>\r\n\s+<Enabled>true<\/Enabled>\r\n\s+<ScheduleByWeek>/);
     assert.match(decodedXml, /<DaysOfWeek>\r\n\s+<Monday \/>\r\n\s+<\/DaysOfWeek>\r\n\s+<WeeksInterval>1<\/WeeksInterval>/);
+    assert.match(decodedXml, /<SessionStateChangeTrigger>\r\n\s+<Enabled>true<\/Enabled>(?:\r\n\s+<UserId>[^<]+<\/UserId>)?\r\n\s+<StateChange>SessionUnlock<\/StateChange>\r\n\s+<\/SessionStateChangeTrigger>/);
     assert.match(decodedXml, /<RestartOnFailure>\r\n\s+<Interval>PT15M<\/Interval>\r\n\s+<Count>3<\/Count>\r\n\s+<\/RestartOnFailure>/);
     assert.match(decodedXml, /<LogonType>InteractiveToken<\/LogonType>/);
     assert.match(decodedXml, /<RunLevel>LeastPrivilege<\/RunLevel>/, 'Persistent tasks must not run elevated code from a writable checkout');
     assert.match(decodedXml, /<Command>.*\\System32\\wscript\.exe<\/Command>/i);
     assert.match(decodedXml, /<Arguments>\/\/B \/\/NoLogo \/\/E:JScript &quot;C:\\Users\\測試 &amp; 使用者\\Desktop\\antigravity2-TW\\scripts\\run_silent_watcher\.js&quot; &quot;C:\\Program Files\\nodejs\\node\.exe&quot; &quot;C:\\Users\\測試 &amp; 使用者\\Desktop\\antigravity2-TW\\auto_localize_watcher\.js&quot;<\/Arguments>/);
 
-    assert.equal(calls.length, 2);
+    assert.equal(installRes.shortcutCreated, true);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0].bin, 'schtasks.exe');
     assert.equal(calls[0].args[0], '/create');
     assert.equal(calls[0].args[1], '/tn');
     assert.equal(calls[0].args[2], 'AntigravityAutoLocalize');
     assert.equal(calls[0].args[3], '/xml');
     assert.equal(calls[0].args[5], '/f');
-    assert.deepEqual(calls[1].args, ['/run', '/tn', 'AntigravityAutoLocalize']);
+    assert.match(calls[1].bin, /cscript\.exe$/i);
+    assert.equal(calls[1].opts.env.AG_SC_ACTION, 'create');
+    assert.equal(calls[1].opts.env.AG_SC_PATH, '__DESKTOP__\\Antigravity (繁中啟動).lnk');
+    assert.match(calls[1].opts.env.AG_SC_ARGS, /^\/\/B \/\/NoLogo \/\/E:JScript .*launch_antigravity_tw\.js"/);
+    assert.deepEqual(calls[2].args, ['/run', '/tn', 'AntigravityAutoLocalize']);
 
     // Uninstall when task exists
     const uninstallCalls = [];
     const resExisting = watcher.uninstallWindowsTask({
         baseDir: root,
-        execFileSyncFn: (bin, args) => {
-            uninstallCalls.push({ bin, args });
+        execFileSyncFn: (bin, args, opts) => {
+            uninstallCalls.push({ bin, args, opts });
             return '';
         }
     });
     assert.equal(resExisting.existed, true);
     assert.equal(resExisting.deleted, true);
+    assert.equal(resExisting.shortcutRemoved, true);
     assert.equal(fs.existsSync(disableFlag), true);
     assert.deepEqual(uninstallCalls[0].args, ['/query', '/tn', 'AntigravityAutoLocalize']);
     assert.deepEqual(uninstallCalls[1].args, ['/delete', '/tn', 'AntigravityAutoLocalize', '/f']);
+    assert.match(uninstallCalls[2].bin, /cscript\.exe$/i);
+    assert.equal(uninstallCalls[2].opts.env.AG_SC_ACTION, 'remove');
 
     // Uninstall idempotently when task does not exist
     const resMissing = watcher.uninstallWindowsTask({
         baseDir: root,
         execFileSyncFn: (bin, args) => {
-            if (args[0] === '/query') throw new Error('ERROR: The system cannot find the file specified.');
-            throw new Error('Should not call /delete when query failed');
+            if (bin === 'schtasks.exe' && args[0] === '/query') throw new Error('ERROR: The system cannot find the file specified.');
+            if (bin === 'schtasks.exe') throw new Error('Should not call /delete when query failed');
+            return '';
         }
     });
     assert.equal(resMissing.existed, false);
     assert.equal(resMissing.deleted, false);
+});
+
+test('Windows manage_windows_shortcut.js creates and removes a real .lnk shortcut with CJK name', { skip: process.platform !== 'win32' }, t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-lnk-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const lnkPath = path.join(root, 'Antigravity (繁中啟動).lnk');
+
+    watcher.manageWindowsShortcut('create', {
+        shortcutPath: lnkPath,
+        nodePath: process.execPath,
+        scriptPath: path.join(repo, 'auto_localize_watcher.js'),
+        workingDir: repo,
+        iconLocation: ''
+    });
+    assert.equal(fs.existsSync(lnkPath), true, 'Shortcut .lnk must be created by WSH JScript');
+    assert.ok(fs.statSync(lnkPath).size > 0);
+
+    watcher.manageWindowsShortcut('remove', {
+        shortcutPath: lnkPath,
+        scriptPath: path.join(repo, 'auto_localize_watcher.js')
+    });
+    assert.equal(fs.existsSync(lnkPath), false, 'Shortcut .lnk must be removed cleanly');
 });
 
 test('stress: CLI interactive brand modes, CJK+space paths, restore, and missing backup guard', async t => {
