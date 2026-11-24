@@ -176,7 +176,13 @@ if [ "$IS_DAEMON" -eq 1 ]; then
     
     RUNTIME="$(mktemp -d "$BASE/runtime.XXXXXX")"
     /bin/chmod 755 "$RUNTIME"
+    DAEMON_NODE_BIN="$RUNTIME/node"
     /usr/bin/install -o root -g wheel -m 755 "$NODE_BIN" "$RUNTIME/node"
+    if ! "$RUNTIME/node" -v >/dev/null 2>&1; then
+        # Homebrew 動態連結版 Node.js 依賴 @rpath/libnode.*.dylib，無法單獨複製執行檔，改用原本的 Node 路徑
+        /bin/rm -f "$RUNTIME/node"
+        DAEMON_NODE_BIN="$NODE_BIN"
+    fi
     for file in auto_localize_watcher.js localization_engine.js package.json package-lock.json; do
         /usr/bin/install -o root -g wheel -m 644 "$DIR/$file" "$RUNTIME/$file"
     done
@@ -195,9 +201,9 @@ if [ "$IS_DAEMON" -eq 1 ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>$LABEL</string>
-<key>ProgramArguments</key><array><string>$RUNTIME/node</string><string>$RUNTIME/auto_localize_watcher.js</string></array>
+<key>ProgramArguments</key><array><string>$DAEMON_NODE_BIN</string><string>$RUNTIME/auto_localize_watcher.js</string></array>
 <key>WorkingDirectory</key><string>$RUNTIME</string>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
 <key>RunAtLoad</key><true/>
 <key>WatchPaths</key><array>
 <string>/Applications/Antigravity.app</string>
@@ -230,8 +236,10 @@ PLIST_EOF
     /usr/bin/install -o root -g wheel -m 644 "$PLIST_TMP" "$PLIST"
     /bin/rm -f "$PLIST_TMP"
     /bin/launchctl enable "system/$LABEL"
-    echo "🌐 正在立即套用繁體中文介面..."
-    "$RUNTIME/node" "$RUNTIME/auto_localize_watcher.js" || true
+    echo "🌐 正在立即套用繁體中文介面（使用 $DAEMON_NODE_BIN）..."
+    if ! "$DAEMON_NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
+        echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
+    fi
     /bin/launchctl bootstrap system "$PLIST"
     /bin/launchctl print "system/$LABEL"
     for old_rt in "$BASE"/runtime.*; do
@@ -308,8 +316,10 @@ PLIST_EOF
     mv "$PLIST_TMP" "$PLIST"
     chmod 644 "$PLIST"
     /bin/launchctl enable "gui/$CURRENT_UID/$LABEL" 2>/dev/null || true
-    echo "🌐 正在立即套用繁體中文介面..."
-    "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js" || true
+    echo "🌐 正在立即套用繁體中文介面（使用 $NODE_BIN）..."
+    if ! "$NODE_BIN" "$RUNTIME/auto_localize_watcher.js"; then
+        echo "⚠️ 立即套用時發生錯誤，請檢查上方輸出或日誌：$LOG_DIR/autolocalize.log" >&2
+    fi
     /bin/launchctl bootstrap "gui/$CURRENT_UID" "$PLIST"
     /bin/launchctl print "gui/$CURRENT_UID/$LABEL"
     echo "🎉 繁體中文與背景守護已全部安裝完成！"
