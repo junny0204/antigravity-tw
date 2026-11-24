@@ -40,12 +40,12 @@
 
 前置需求：已安裝 Node.js `>= 22.12.0`（官方安裝包或 `brew install node`）。
 
-### 最防呆一鍵安裝（推薦：免手動解壓、免處理雙擊權限）
+### 最防呆一鍵安裝／更新（推薦：第 1 次與之後重複執行都能一次跑到底）
 
-打開 Mac 的「**終端機（Terminal）**」，直接複製貼上以下一行按 Enter，即可自動下載、安裝繁體中文並啟用背景自動更新：
+打開 Mac 的「**終端機（Terminal）**」，直接複製貼上以下一行按 Enter，它會自動判斷（未下載過就下載、已下載過就更新），接著自動安裝繁體中文並啟用背景自動更新：
 
 ```bash
-git clone https://github.com/junny0204/antigravity-tw.git ~/antigravity-tw && cd ~/antigravity-tw && node localization_engine.js --tw --brand-title english && bash install_macos_autowatcher.sh
+if [ -d ~/antigravity-tw/.git ]; then git -C ~/antigravity-tw pull --ff-only; else git clone https://github.com/junny0204/antigravity-tw.git ~/antigravity-tw; fi && cd ~/antigravity-tw && node localization_engine.js --tw --brand-title english && bash install_macos_autowatcher.sh
 ```
 
 執行完成後，按 **`Cmd + Q`** 完全退出 Antigravity 並重新開啟即生效（若系統要求密碼，輸入 Mac 開機密碼即可）。
