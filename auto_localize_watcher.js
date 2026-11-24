@@ -997,11 +997,26 @@ function isWindowsAdmin(execSyncFn = execFileSync) {
     }
 }
 
-function buildWindowsTaskXml({ nodePath, scriptPath, workingDir, runLevel = 'LeastPrivilege' }) {
+function resolveCurrentWindowsUserId() {
+    const domain = (process.env.USERDOMAIN || '').trim();
+    const user = (process.env.USERNAME || '').trim();
+    if (domain && user) return `${domain}\\${user}`;
+    if (user) return user;
+    try {
+        return os.userInfo().username || '';
+    } catch {
+        return '';
+    }
+}
+
+function buildWindowsTaskXml({ nodePath, scriptPath, workingDir, runLevel = 'LeastPrivilege', userId = resolveCurrentWindowsUserId() }) {
     const command = escapeXml(nodePath);
     const args = escapeXml(`"${scriptPath}"`);
     const cwd = escapeXml(workingDir || path.dirname(scriptPath));
     const safeRunLevel = runLevel === 'HighestAvailable' ? 'HighestAvailable' : 'LeastPrivilege';
+    const safeUserId = userId ? escapeXml(String(userId).trim()) : '';
+    const logonUserLine = safeUserId ? `      <UserId>${safeUserId}</UserId>` : null;
+    const principalUserLine = safeUserId ? `      <UserId>${safeUserId}</UserId>` : null;
     return [
         '<?xml version="1.0" encoding="UTF-16"?>',
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
@@ -1019,10 +1034,12 @@ function buildWindowsTaskXml({ nodePath, scriptPath, workingDir, runLevel = 'Lea
         '    </TimeTrigger>',
         '    <LogonTrigger>',
         '      <Enabled>true</Enabled>',
+        ...(logonUserLine ? [logonUserLine] : []),
         '    </LogonTrigger>',
         '  </Triggers>',
         '  <Principals>',
         '    <Principal id="Author">',
+        ...(principalUserLine ? [principalUserLine] : []),
         '      <LogonType>InteractiveToken</LogonType>',
         `      <RunLevel>${safeRunLevel}</RunLevel>`,
         '    </Principal>',
