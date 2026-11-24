@@ -39,20 +39,25 @@ function log(message) {
     const line = '[' + new Date().toISOString() + '] ' + message;
     console.log(line);
     const isService = Boolean(process.env.XPC_SERVICE_NAME);
+    const isTestRun = process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT);
     const logPaths = [];
-    if (IS_MAC && ROOT) {
-        try {
-            const sysLogDir = '/Library/Logs/Antigravity2TW';
-            if (fs.existsSync(sysLogDir)) fs.chmodSync(sysLogDir, 0o755);
-            const sysLog = path.join(sysLogDir, 'autolocalize.log');
-            if (fs.existsSync(sysLog)) fs.chmodSync(sysLog, 0o644);
-        } catch {}
-        if (!isService) {
-            logPaths.push('/Library/Logs/Antigravity2TW/autolocalize.log');
+    if (process.env.AG_TW_LOG_PATH) {
+        logPaths.push(process.env.AG_TW_LOG_PATH);
+    } else if (!isTestRun) {
+        if (IS_MAC && ROOT) {
+            try {
+                const sysLogDir = '/Library/Logs/Antigravity2TW';
+                if (fs.existsSync(sysLogDir)) fs.chmodSync(sysLogDir, 0o755);
+                const sysLog = path.join(sysLogDir, 'autolocalize.log');
+                if (fs.existsSync(sysLog)) fs.chmodSync(sysLog, 0o644);
+            } catch {}
+            if (!isService) {
+                logPaths.push('/Library/Logs/Antigravity2TW/autolocalize.log');
+            }
         }
-    }
-    if (!isService) {
-        logPaths.push(path.join(DIR, 'autolocalize.log'));
+        if (!isService) {
+            logPaths.push(path.join(DIR, 'autolocalize.log'));
+        }
     }
     for (const lp of logPaths) {
         try {
@@ -245,7 +250,8 @@ function getWindowsUninstallCandidates(execSyncFn = execFileSync) {
             const output = execSyncFn('reg.exe', ['query', root, '/s', '/f', 'Antigravity', '/d'], {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore'],
-                timeout: 5000
+                timeout: 5000,
+                windowsHide: true
             });
             for (const line of String(output || '').split(/\r?\n/)) {
                 const match = line.match(/^\s*(InstallLocation|DisplayIcon)\s+REG_\w+\s+(.+)$/i);
@@ -464,7 +470,7 @@ function safeReplaceFile(src, dst, mode, uid, gid, { atomicRequired = false } = 
                 }
             }
             if (replaced) {
-                try { fs.unlinkSync(src); } catch {}
+                try { fs.rmSync(src, { force: true, maxRetries: 5, retryDelay: 20 }); } catch {}
             }
         } else {
             throw error;
@@ -494,6 +500,16 @@ function fsyncDirectory(dir) {
     try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
+function isWindowsAsarBusyForAtomicSwap(asarPath) {
+    if (process.platform !== 'win32') return false;
+    try {
+        fs.renameSync(asarPath, asarPath);
+        return false;
+    } catch (err) {
+        return Boolean(err && err.code === 'EBUSY');
+    }
+}
+
 // Replace the live archive AND retain the exact displaced archive. Merely
 // hashing before fs.renameSync has a TOCTOU hole: ShipIt can replace the
 // destination between the hash check and rename. Never fall back to a blind
@@ -510,7 +526,7 @@ function exchangeAsar(candidate, live, previousPath) {
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', path.join(DIR, 'scripts', 'atomic_asar_replace.ps1'),
             '-Replacement', candidate, '-Live', live, '-Previous', previousPath
-        ], { stdio: 'pipe', timeout: 30000 });
+        ], { stdio: 'pipe', timeout: 30000, windowsHide: true });
         if (!fs.existsSync(previousPath)) throw new Error('ReplaceFileW 未保留原本的 app.asar。');
         return previousPath;
     }
@@ -706,7 +722,7 @@ function buildArchive(stageDir) {
     execFileSync(process.execPath, [
         path.join(DIR, 'localization_engine.js'), '--tw', '--brand-title', 'english',
         '--install-dir', stageDir, '--no-kill', '--staging'
-    ], { cwd: DIR, stdio: 'inherit', timeout: 180000 });
+    ], { cwd: DIR, stdio: 'pipe', timeout: 180000, windowsHide: true });
 }
 
 function signApp(appPath, sourceStat) {
@@ -777,6 +793,11 @@ function checkAndLocalizeApp(appInfo, {
             safeReplaceFile(stateTmp, statePath, 0o644, sourceStat.uid, sourceStat.gid);
         } catch {}
         log(`目標 app.asar 來自外部同版或較新的引擎 (v${targetMeta.version})，主動保留以防回滾。`);
+        return false;
+    }
+
+    if (process.platform === 'win32' && exchange === exchangeAsar && isWindowsAsarBusyForAtomicSwap(asarPath)) {
+        log('偵測到 Antigravity 執行中並鎖定 app.asar，將於程式關閉後的排程自動套用繁中更新。');
         return false;
     }
 
@@ -1183,8 +1204,9 @@ async function refreshTranslationsAndReapply({
     execReapplyFn = (dir) => {
         execFileSync(process.execPath, [path.join(dir, 'auto_localize_watcher.js')], {
             cwd: dir,
-            stdio: 'inherit',
+            stdio: 'pipe',
             timeout: 180000,
+            windowsHide: true,
             env: { ...process.env, AG_TW_SKIP_TRANSLATION_CHECK: '1' }
         });
     },
@@ -1345,6 +1367,10 @@ async function main() {
         if (!appInfo) { log('尚未找到 Antigravity，等待下次排程。'); return; }
         checkAndLocalizeApp(appInfo);
 
+        if (process.platform === 'win32' && isWindowsAsarBusyForAtomicSwap(appInfo.asarPath)) {
+            return;
+        }
+
         // 安裝守護即同意翻譯資料自動更新；程式碼升級仍由使用者手動處理。
         await refreshTranslationsAndReapply().catch(err => {
             log('翻譯資料更新失敗，保留目前版本：' + (err && err.message ? err.message : err));
@@ -1356,6 +1382,8 @@ async function main() {
         log('自動繁中化失敗，稍後重試：' + (error.stack || error.message));
         if (IS_MAC && (error.code === 'EPERM' || (error.message && error.message.includes('EPERM')))) {
             log('因 macOS「App 管理」權限尚未開啟，自動寫入受阻；請於「系統設定 → 隱私權與安全性 → App 管理」開啟終端機權限後重試。');
+        } else if (process.platform === 'win32' && error.message && error.message.includes('Win32 error 32')) {
+            log('偵測到其他程序正獨占鎖定 app.asar（例如官方更新安裝中），將於下次排程自動重試。');
         } else if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES' || (error.message && (error.message.includes('EPERM') || error.message.includes('EACCES'))))) {
             log('因 Windows 資料夾權限限制（例如 Program Files），最低權限排程無法自動覆寫。請依安裝手冊以管理員身分手動重新套用中文化；重新安裝守護不會提高背景排程權限。');
         }

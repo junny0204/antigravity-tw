@@ -43,9 +43,8 @@ jobs:
         run: npm ci
       - name: Validate Taiwan dictionaries and runtime rules
         run: node scripts/compare_dicts.js
-      - name: Run Windows deliverables, sync, and core suites
-        run: |
-          node --test --test-concurrency=1 test/auto_updater.test.js test/engine.test.js test/installer_regressions.test.js test/release_asset_policy.test.js test/translation_updates.test.js test/upstream_sync.test.js test/windows_deliverables.test.js
+      - name: Run full Windows test suite (including native ASAR exchange & open-handle watcher tests)
+        run: npm test
 
   verify-macos-e2e:
     runs-on: macos-latest

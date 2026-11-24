@@ -121,11 +121,16 @@ if (USE_TW) {
         "[修改] 正在向 menu.js 注入菜单汉化代码...": "[修改] 正在向 menu.js 注入選單漢化程式碼...",
         "[修改] 菜单汉化注入成功！": "[修改] 選單漢化注入成功！",
         "[修改] 正在向 tray.js 注入任务栏菜单汉化...": "[修改] 正在向 tray.js 注入系統匣選單漢化...",
+        "[修改] 任务栏菜单汉化注入成功（": "[修改] 系統匣選單漢化注入成功（",
+        " 处）！": " 處）！",
         "[修改] 任务栏菜单汉化注入成功！": "[修改] 系統匣選單漢化注入成功！",
+        "[警告] 未能在 tray.js 中命中任何任务栏注入点。": "[警告] 未能在 tray.js 中命中任何系統匣注入點。",
         "[修改] 正在向 loadingOverlay.js 注入加载页汉化...": "[修改] 正在向 loadingOverlay.js 注入載入頁漢化...",
         "[修改] 加载页汉化注入成功！": "[修改] 載入頁漢化注入成功！",
+        "[警告] 未能在 loadingOverlay.js 中找到加载页文本插入点。": "[警告] 未能在 loadingOverlay.js 中找到載入頁文字插入點。",
         "[修改] 正在向 updater.js 注入更新弹窗汉化...": "[修改] 正在向 updater.js 注入更新彈出視窗漢化...",
         "[修改] 更新弹窗汉化注入成功！": "[修改] 更新彈出視窗漢化注入成功！",
+        "[警告] 未能在 updater.js 中找到更新弹窗插入点。": "[警告] 未能在 updater.js 中找到更新彈出視窗插入點。",
         "[修改] 正在向 utils.js 注入伴生面板 (Sidecar) 汉化钩子...": "[修改] 正在向 utils.js 注入伴生面板 (Sidecar) 漢化掛鉤...",
         "[修改] 伴生面板 (Sidecar) 汉化钩子注入成功！": "[修改] 伴生面板 (Sidecar) 漢化掛鉤注入成功！",
         "[警告] 未能在 utils.js 中找到 Sidecar 钩子插入点。": "[警告] 未能在 utils.js 中找到 Sidecar 掛鉤插入點。",
@@ -163,7 +168,11 @@ if (USE_TW) {
         "[任务] 无法触发背景守护同步（可能权限不足或排程未启动），下次定时巡检仍会自动生效。": "[任務] 無法觸發背景守護同步（可能權限不足或排程未啟動），下次排程巡檢仍會自動生效。",
         "[错误] 管理员提权执行失败或用户取消了密码输入。": "[錯誤] 管理員提權執行失敗或使用者取消了密碼輸入。",
         "语法校验失败 (": "語法校驗失敗 (",
+        "文件替换失败 (": "檔案替換失敗 (",
+        "[提示] 临时目录清理失败（签名前）: ": "[提示] 暫存目錄清理失敗（簽名前）: ",
         "[提示] 临时目录已保留: ": "[提示] 暫存目錄已保留: ",
+        "macOS 签名失败且回滚失败，原始文件保留于 ": "macOS 簽名失敗且回滾失敗，原始檔案保留於 ",
+        "macOS 恢复签名失败且回滚失败，原文件保留于 ": "macOS 還原簽名失敗且回滾失敗，原始檔案保留於 ",
         "[错误] 汉化未完成，未提交的候选包不会替换客户端: ": "[錯誤] 繁中化尚未完成，未提交的候選包不會覆寫用戶端: ",
         "[错误] 恢复备份失败: ": "[錯誤] 還原備份失敗: ",
         "[提示] macOS 写入受限，请使用管理员权限运行脚本。": "[提示] macOS 寫入受限，請以管理員權限執行指令碼。",
@@ -733,6 +742,24 @@ function computeDirRecipeHash(dir) {
             }
         }
     }
+    try {
+        const updaterPath = path.join(dir, 'scripts', 'auto_updater.js');
+        if (fs.existsSync(updaterPath)) {
+            const updater = require(updaterPath);
+            const active = updater && typeof updater.readActiveTranslation === 'function'
+                ? updater.readActiveTranslation(dir) : null;
+            if (active) {
+                files.push(path.join('.watcher-state', 'active_translation.json'));
+                for (const folder of ['dicts', 'dicts_tw', 'rules']) {
+                    const sub = path.join(active.folder, folder);
+                    if (!fs.existsSync(sub)) continue;
+                    for (const name of fs.readdirSync(sub).filter(x => x.endsWith('.json')).sort()) {
+                        files.push(path.relative(dir, path.join(sub, name)));
+                    }
+                }
+            }
+        }
+    } catch {}
     const hash = crypto.createHash('sha256');
     for (const file of files) {
         const fullPath = path.join(dir, file);
@@ -966,7 +993,7 @@ function install20(resourcesDir, noKill = false, staging = false, options = {}) 
         const translationJs = generateJs();
         const modifierMap = new Map([
             ['dist/preload.js', content => patchPreloadJs(content, translationJs, SIGNATURE_START, SIGNATURE_END)],
-            ['dist/utils.js', content => patchUtilsJs(content, SIGNATURE_START, SIGNATURE_END)],
+            ['dist/utils.js', content => patchUtilsJs(content, SIGNATURE_START, SIGNATURE_END, USE_TW)],
             ['dist/menu.js', content => patchMenuJs(content, USE_TW)],
             ['dist/tray.js', content => patchTrayJs(content, USE_TW)],
             ['dist/loadingOverlay.js', content => patchLoadingOverlayJs(content, USE_TW)],
@@ -1332,6 +1359,7 @@ if (typeof module !== 'undefined' && module.exports) {
         cleanElectronCache,
         getPackageVersion,
         isRealAppInstallDir,
+        computeDirRecipeHash,
         discoverMacWatcherRuntimes,
         prepareMacWatcherSync,
         commitMacWatcherSync,

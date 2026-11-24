@@ -638,5 +638,94 @@ test('watcher removes .autolocalize temp dirs from appPath before sign runs', t 
     assert.deepEqual(rollbackSeen, [[], []]);
 });
 
+test('Windows exchangeAsar and checkAndLocalizeApp succeed while app.asar is held open by Electron-like reader', { skip: process.platform !== 'win32' }, async t => {
+    const { spawn } = require('node:child_process');
+    const f = fixture(t);
+    // Hold f.asarPath open in a separate Win32 process with Read access + Read|Write|Delete sharing
+    const holder = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '$fs = [IO.File]::Open($env:AG_TEST_HOLD_PATH, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Write -bor [IO.FileShare]::Delete)); ' +
+        '[Console]::Out.WriteLine("OPEN"); [Console]::Out.Flush(); ' +
+        '[void][Console]::In.ReadLine(); ' +
+        '$sr = New-Object IO.StreamReader($fs); [Console]::Out.WriteLine("READ:" + $sr.ReadToEnd()); [Console]::Out.Flush(); ' +
+        '$fs.Dispose()'
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AG_TEST_HOLD_PATH: f.asarPath } });
+    t.after(() => { try { holder.kill(); } catch {} });
+
+    await new Promise((resolve, reject) => {
+        let buf = '';
+        holder.stdout.on('data', chunk => {
+            buf += chunk.toString('utf8');
+            if (buf.includes('OPEN')) resolve();
+        });
+        holder.on('error', reject);
+        holder.on('exit', code => { if (!buf.includes('OPEN')) reject(new Error('holder exited early: ' + code)); });
+    });
+
+    assert.equal(f.run(), true, 'watcher must atomically replace app.asar even while Electron holds a read handle');
+    assert.equal(f.read(), 'official-v1\n命令選擇區');
+    assert.equal(fs.readFileSync(f.asarPath + '.bak', 'utf8'), 'official-v1');
+
+    const oldRead = await new Promise((resolve, reject) => {
+        let out = '';
+        holder.stdout.on('data', chunk => {
+            out += chunk.toString('utf8');
+            if (out.includes('READ:')) resolve(out.trim());
+        });
+        holder.stdin.write('\n');
+        holder.on('error', reject);
+    });
+    assert.match(oldRead, /READ:official-v1$/, 'running process open handle must continue reading original bytes cleanly');
+});
+
+test('localization_engine computeDirRecipeHash matches watcher recipeHash', () => {
+    const engine = require('../localization_engine');
+    assert.equal(engine.computeDirRecipeHash(path.resolve(__dirname, '..')), recipeHash());
+});
+
+test('Windows checkAndLocalizeApp skips cleanly without building when app.asar lacks FILE_SHARE_DELETE, then applies once closed', { skip: process.platform !== 'win32' }, async t => {
+    const { spawn } = require('node:child_process');
+    const f = fixture(t);
+    // Open f.asarPath WITHOUT FileShare.Delete (matching live Antigravity.exe on Windows)
+    const holder = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '$fs = [IO.File]::Open($env:AG_TEST_HOLD_PATH, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Write)); ' +
+        '[Console]::Out.WriteLine("OPEN"); [Console]::Out.Flush(); ' +
+        '[void][Console]::In.ReadLine(); ' +
+        '$fs.Dispose(); [Console]::Out.WriteLine("CLOSED"); [Console]::Out.Flush()'
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AG_TEST_HOLD_PATH: f.asarPath } });
+    t.after(() => { try { holder.kill(); } catch {} });
+
+    await new Promise((resolve, reject) => {
+        let buf = '';
+        holder.stdout.on('data', chunk => {
+            buf += chunk.toString('utf8');
+            if (buf.includes('OPEN')) resolve();
+        });
+        holder.on('error', reject);
+        holder.on('exit', code => { if (!buf.includes('OPEN')) reject(new Error('holder exited early: ' + code)); });
+    });
+
+    assert.equal(f.run(), false, 'must defer cleanly without throwing while Antigravity locks app.asar against DELETE');
+    assert.equal(f.builds(), 0, 'must not waste CPU building staging archive while locked');
+    assert.equal(f.read(), 'official-v1');
+
+    await new Promise((resolve, reject) => {
+        let out = '';
+        holder.stdout.on('data', chunk => {
+            out += chunk.toString('utf8');
+            if (out.includes('CLOSED')) resolve();
+        });
+        holder.stdin.write('\n');
+        holder.on('error', reject);
+    });
+
+    assert.equal(f.run(), true, 'must apply immediately on next run after Antigravity closes');
+    assert.equal(f.builds(), 1);
+    assert.equal(f.read(), 'official-v1\n命令選擇區');
+});
+
+
+
 
 

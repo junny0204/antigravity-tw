@@ -31,7 +31,7 @@ function cleanUtilsJsContent(content) {
     return content.replace(/\n?\s*\/\* --- SIDECAR TRANSLATION START --- \*\/[\s\S]*?\/\* --- SIDECAR TRANSLATION END --- \*\//g, '');
 }
 
-function patchUtilsJs(utilsContent, signatureStart, signatureEnd) {
+function patchUtilsJs(utilsContent, signatureStart, signatureEnd, useTw = false) {
     console.log(`[修改] 正在向 utils.js 注入伴生面板 (Sidecar) 汉化钩子...`);
     const cleaned = cleanUtilsJsContent(utilsContent);
     const targetStr = "hubContents.on('will-navigate', guardExternalNavigation);";
@@ -40,6 +40,7 @@ function patchUtilsJs(utilsContent, signatureStart, signatureEnd) {
         console.warn(`[警告] 未能在 utils.js 中找到 Sidecar 钩子插入点。`);
         return cleaned;
     }
+    const sidecarWarnPrefix = useTw ? '[繁中化] Sidecar 注入失敗:' : '[汉化] Sidecar 注入失败:';
 
     const sidecarHookJs = `/* --- SIDECAR TRANSLATION START --- */
     const getSidecarLocalizationScript = () => {
@@ -108,7 +109,7 @@ function patchUtilsJs(utilsContent, signatureStart, signatureEnd) {
                     return frame.executeJavaScript(script);
                 })
                 .catch((err) => {
-                    console.warn('[汉化] Sidecar 注入失败:', err && err.message ? err.message : err);
+                    console.warn(${JSON.stringify(sidecarWarnPrefix)}, err && err.message ? err.message : err);
                 });
         } catch (_err) {}
     };
