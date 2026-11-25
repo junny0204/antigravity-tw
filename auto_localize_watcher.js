@@ -1176,13 +1176,16 @@ function buildWindowsTaskXml({
     runLevel = 'LeastPrivilege',
     userId = resolveCurrentWindowsUserId(),
     wscriptPath = null,
-    launcherPath = null
+    launcherPath = null,
+    daemonScriptPath = null
 }) {
     const winDir = workingDir || path.win32.dirname(scriptPath);
+    const baseWinDir = path.win32.dirname(scriptPath);
     const resolvedWscript = wscriptPath || path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
-    const resolvedLauncher = launcherPath || path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'run_silent_watcher.js');
+    const resolvedLauncher = launcherPath || path.win32.join(baseWinDir, 'scripts', 'run_silent_watcher.js');
+    const resolvedDaemon = daemonScriptPath || path.win32.join(baseWinDir, 'scripts', 'win_event_watcher.js');
     const command = escapeXml(resolvedWscript);
-    const args = escapeXml(`//B //NoLogo //E:JScript "${resolvedLauncher}" "${nodePath}" "${scriptPath}"`);
+    const args = escapeXml(`//B //NoLogo //E:JScript "${resolvedLauncher}" "${nodePath}" "${resolvedDaemon}"`);
     const cwd = escapeXml(winDir);
     const safeRunLevel = runLevel === 'HighestAvailable' ? 'HighestAvailable' : 'LeastPrivilege';
     const safeUserId = userId ? escapeXml(String(userId).trim()) : '';
@@ -1192,7 +1195,7 @@ function buildWindowsTaskXml({
         '<?xml version="1.0" encoding="UTF-16"?>',
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
         '  <RegistrationInfo>',
-        '    <Description>Antigravity 2.0 繁體中文自動更新守護 (開機登入、螢幕解鎖與每週自動檢查重套中文化)</Description>',
+        '    <Description>Antigravity 2.0 繁體中文零耗電核心事件守護 (偵測官方更新與 App 啟閉自動維持繁體中文)</Description>',
         '  </RegistrationInfo>',
         '  <Triggers>',
         '    <CalendarTrigger>',
@@ -1232,7 +1235,7 @@ function buildWindowsTaskXml({
         '    <AllowStartOnDemand>true</AllowStartOnDemand>',
         '    <Enabled>true</Enabled>',
         '    <Hidden>false</Hidden>',
-        '    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>',
+        '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
         '    <RestartOnFailure>',
         '      <Interval>PT15M</Interval>',
         '      <Count>3</Count>',
@@ -1254,81 +1257,54 @@ function encodeUtf16LeWithBom(text) {
     return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
 }
 
-const WINDOWS_SHORTCUT_NAME = 'Antigravity (繁中啟動).lnk';
+const LEGACY_WINDOWS_SHORTCUT_NAME = 'Antigravity (繁中啟動).lnk';
 
-function resolveWindowsAppIcon(options = {}) {
-    if (typeof options.iconLocation === 'string') return options.iconLocation;
-    try {
-        const info = typeof options.getAppInfoFn === 'function' ? options.getAppInfoFn() : getAppInfo();
-        if (info && info.appPath) {
-            for (const exeName of ['Antigravity.exe', 'Antigravity IDE.exe']) {
-                const candidate = path.win32.join(info.appPath, exeName);
-                if (fs.existsSync(candidate)) return `${candidate},0`;
+function removeLegacyWindowsShortcuts({ desktopDirs = null } = {}) {
+    const removed = [];
+    const dirs = Array.isArray(desktopDirs) ? desktopDirs : [
+        process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Desktop') : null,
+        process.env.OneDrive ? path.join(process.env.OneDrive, 'Desktop') : null,
+        process.env.OneDriveCommercial ? path.join(process.env.OneDriveCommercial, 'Desktop') : null
+    ].filter(Boolean);
+    const seen = new Set();
+    for (const dir of dirs) {
+        const key = dir.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const candidate = path.join(dir, LEGACY_WINDOWS_SHORTCUT_NAME);
+        try {
+            if (fs.existsSync(candidate)) {
+                fs.rmSync(candidate, { force: true });
+                removed.push(candidate);
             }
-        }
-    } catch {}
-    return '';
+        } catch {}
+    }
+    return removed;
 }
 
-function manageWindowsShortcut(action, options = {}) {
-    const execSyncFn = options.execFileSyncFn || execFileSync;
-    const nodePath = options.nodePath || process.execPath;
-    const scriptPath = options.scriptPath || path.join(DIR, 'auto_localize_watcher.js');
-    const workingDir = options.workingDir || path.win32.dirname(scriptPath);
-    const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-    const wscriptPath = options.wscriptPath || path.win32.join(system32, 'wscript.exe');
-    const cscriptPath = options.cscriptPath || path.win32.join(system32, 'cscript.exe');
-    const managerPath = options.shortcutManagerPath || path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'manage_windows_shortcut.js');
-    const shortcutSpec = options.shortcutPath || `__DESKTOP__\\${WINDOWS_SHORTCUT_NAME}`;
-    const cfgPath = path.join(os.tmpdir(), `ag_sc_cfg_${process.pid}_${crypto.randomBytes(4).toString('hex')}.txt`);
-
-    if (action === 'remove') {
-        const lines = ['remove', shortcutSpec].join('\r\n');
-        try {
-            fs.writeFileSync(cfgPath, encodeUtf16LeWithBom(lines));
-            execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath, cfgPath], {
-                encoding: 'utf8',
-                stdio: 'ignore',
-                windowsHide: true,
-                env: {
-                    ...process.env,
-                    AG_SC_ACTION: 'remove',
-                    AG_SC_PATH: shortcutSpec
-                }
-            });
-        } finally {
-            try { if (fs.existsSync(cfgPath)) fs.unlinkSync(cfgPath); } catch {}
-        }
-        return { action, shortcutSpec };
-    }
-
-    const silentRunner = options.launcherPath || path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'run_silent_watcher.js');
-    const smartLauncher = path.win32.join(path.win32.dirname(scriptPath), 'scripts', 'launch_antigravity_tw.js');
-    const shortcutArgs = `//B //NoLogo //E:JScript "${silentRunner}" "${nodePath}" "${smartLauncher}"`;
-    const iconLocation = resolveWindowsAppIcon(options);
-    const description = '啟動 Antigravity 2.0（啟動前自動檢查並套用繁體中文）';
-    const lines = ['create', shortcutSpec, wscriptPath, shortcutArgs, workingDir, iconLocation, description].join('\r\n');
+function stopWindowsEventDaemon(baseDir = DIR, { killFn = (pid) => process.kill(pid) } = {}) {
+    const pidFile = path.join(baseDir, '.watcher-state', 'win-daemon.pid');
+    let stopped = false;
     try {
-        fs.writeFileSync(cfgPath, encodeUtf16LeWithBom(lines));
-        execSyncFn(cscriptPath, ['//B', '//NoLogo', '//E:JScript', managerPath, cfgPath], {
-            encoding: 'utf8',
-            stdio: 'ignore',
-            windowsHide: true,
-            env: {
-                ...process.env,
-                AG_SC_ACTION: 'create',
-                AG_SC_PATH: shortcutSpec,
-                AG_SC_TARGET: wscriptPath,
-                AG_SC_ARGS: shortcutArgs,
-                AG_SC_WORKDIR: workingDir,
-                AG_SC_ICON: iconLocation,
-                AG_SC_DESC: description
-            }
-        });
-    } finally {
-        try { if (fs.existsSync(cfgPath)) fs.unlinkSync(cfgPath); } catch {}
-    }
-    return { action, shortcutSpec, shortcutArgs, iconLocation };
+        if (!fs.existsSync(pidFile)) return false;
+        const raw = fs.readFileSync(pidFile, 'utf8').trim();
+        let pid = null;
+        if (raw.startsWith('{')) {
+            const parsed = JSON.parse(raw);
+            pid = parsed && Number.isInteger(parsed.pid) ? parsed.pid : null;
+        } else {
+            const n = Number(raw);
+            pid = Number.isInteger(n) ? n : null;
+        }
+        if (pid && pid > 0 && pid !== process.pid) {
+            try {
+                killFn(pid);
+                stopped = true;
+            } catch {}
+        }
+        try { fs.rmSync(pidFile, { force: true }); } catch {}
+    } catch {}
+    return stopped;
 }
 
 function installWindowsTask(options = {}) {
@@ -1351,6 +1327,12 @@ function installWindowsTask(options = {}) {
     try {
         fs.rmSync(path.join(baseDir, '.watcher-state', 'update_policy.json'), { force: true });
     } catch {}
+    // Stop any previous daemon instance before re-registering so the new version takes over cleanly.
+    stopWindowsEventDaemon(baseDir, { killFn: options.killFn });
+    // Remove legacy v1.0.6 extra Desktop shortcut now that normal Antigravity launch works seamlessly.
+    if (options.cleanLegacyShortcuts !== false) {
+        removeLegacyWindowsShortcuts({ desktopDirs: options.desktopDirs });
+    }
 
     const taskRun = buildWindowsTaskCommand(nodePath, scriptPath);
     const xmlText = buildWindowsTaskXml({ nodePath, scriptPath, workingDir, runLevel });
@@ -1359,7 +1341,7 @@ function installWindowsTask(options = {}) {
     console.log('=======================================================');
     console.log('  安裝 Antigravity 背景自動更新守護 (Windows 工作排程)');
     console.log('=======================================================');
-    console.log(`[1/3] 正在註冊 Windows 工作排程 (${taskName})，於開機登入、螢幕解鎖與每週自動檢查...`);
+    console.log(`[1/2] 正在註冊 Windows 零耗電核心事件守護 (${taskName})...`);
     try {
         fs.writeFileSync(xmlPath, encodeUtf16LeWithBom(xmlText));
         if (typeof options.onXmlWritten === 'function') {
@@ -1388,17 +1370,7 @@ function installWindowsTask(options = {}) {
     } finally {
         try { if (fs.existsSync(xmlPath)) fs.unlinkSync(xmlPath); } catch {}
     }
-    console.log('[2/3] 正在建立桌面繁中啟動捷徑...');
-    let shortcutCreated = false;
-    if (options.createShortcut !== false) {
-        try {
-            manageWindowsShortcut('create', { ...options, execFileSyncFn: execSyncFn, nodePath, scriptPath, workingDir });
-            shortcutCreated = true;
-        } catch (err) {
-            console.log(`[提示] 建立桌面捷徑略過（${err.message}），背景排程仍可正常運作。`);
-        }
-    }
-    console.log('[3/3] 正在立即執行一次繁體中文化檢查...');
+    console.log('[2/2] 正在立即啟動背景事件守護並檢查繁體中文化狀態...');
     let firstRunWarning = null;
     try {
         execSyncFn('schtasks.exe', ['/run', '/tn', taskName], { encoding: 'utf8', stdio: 'ignore' });
@@ -1422,15 +1394,12 @@ function installWindowsTask(options = {}) {
         }
     }
     if (firstRunWarning) {
-        console.log(`[提示] 排程已註冊完成；立即觸發回報（${firstRunWarning}），將於下次開機登入、螢幕解鎖或每週排程自動巡檢套用。`);
+        console.log(`[提示] 排程已註冊完成；立即觸發回報（${firstRunWarning}），將於下次開機登入、螢幕解鎖或每週排程自動啟動。`);
     }
-    console.log('\n[完成] Windows 背景自動更新守護已啟動！');
+    console.log('\n[完成] Windows 零耗電核心事件守護已啟動！日後照常點原本的 Antigravity 圖示即可自動維持繁體中文。');
     console.log(`工作名稱：${taskName}`);
-    if (shortcutCreated) {
-        console.log(`桌面捷徑：${WINDOWS_SHORTCUT_NAME}（日後點此啟動 Antigravity，遇官方更新會先自動補翻再開啟）`);
-    }
     console.log(`執行紀錄：${path.join(baseDir, 'autolocalize.log')}`);
-    return { taskName, taskRun, xmlText, shortcutCreated, shortcutName: WINDOWS_SHORTCUT_NAME };
+    return { taskName, taskRun, xmlText };
 }
 
 function uninstallWindowsTask(options = {}) {
@@ -1442,6 +1411,10 @@ function uninstallWindowsTask(options = {}) {
     console.log('=======================================================');
     console.log('  卸載 Antigravity 背景自動更新守護 (Windows 工作排程)');
     console.log('=======================================================');
+    try {
+        fs.writeFileSync(disableFlag, 'disabled\n', 'utf8');
+    } catch {}
+    const daemonStopped = stopWindowsEventDaemon(baseDir, { killFn: options.killFn });
     let existed = false;
     let deleted = false;
     try {
@@ -1452,27 +1425,36 @@ function uninstallWindowsTask(options = {}) {
     }
 
     if (existed) {
-        console.log(`[1/2] 正在移除工作排程 ${taskName}...`);
-        execSyncFn('schtasks.exe', ['/delete', '/tn', taskName, '/f'], {
-            encoding: 'utf8',
-            stdio: 'inherit'
-        });
+        console.log(`[1/1] 正在移除工作排程 ${taskName}...`);
+        try {
+            execSyncFn('schtasks.exe', ['/delete', '/tn', taskName, '/f'], {
+                encoding: 'utf8',
+                stdio: 'inherit'
+            });
+        } catch (delErr) {
+            if (!options.execFileSyncFn && delErr && (delErr.code === 'EPERM' || delErr.code === 'EACCES')) {
+                execSyncFn('powershell.exe', [
+                    '-NoProfile', '-NonInteractive', '-Command',
+                    'Unregister-ScheduledTask -TaskName $env:AG_TASK_NAME -Confirm:$false'
+                ], {
+                    encoding: 'utf8',
+                    stdio: 'inherit',
+                    windowsHide: true,
+                    env: { ...process.env, AG_TASK_NAME: taskName }
+                });
+            } else {
+                throw delErr;
+            }
+        }
         deleted = true;
         console.log('[完成] Windows 背景自動守護已卸載！');
     } else {
         console.log(`[提示] 未偵測到已註冊的排程工作 (${taskName})，無須移除。`);
     }
-    let shortcutRemoved = false;
-    if (options.removeShortcut !== false) {
-        try {
-            manageWindowsShortcut('remove', { ...options, execFileSyncFn: execSyncFn });
-            shortcutRemoved = true;
-        } catch {}
+    if (options.cleanLegacyShortcuts !== false) {
+        removeLegacyWindowsShortcuts({ desktopDirs: options.desktopDirs });
     }
-    try {
-        fs.writeFileSync(disableFlag, 'disabled\n', 'utf8');
-    } catch {}
-    return { taskName, existed, deleted, shortcutRemoved };
+    return { taskName, existed, deleted, daemonStopped };
 }
 
 function getMacAppSupportDirs() {
@@ -1547,6 +1529,17 @@ function shouldForceAppLaunchCheck({
     return (nowMs - cache.lastChecked) >= minRecheckMs;
 }
 
+function hasPendingRetryScheduled(cacheFile) {
+    if (!cacheFile) return false;
+    try {
+        if (!fs.existsSync(cacheFile)) return false;
+        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        return Boolean(cache && cache.retryScheduled === true);
+    } catch {
+        return false;
+    }
+}
+
 async function refreshTranslationsAndReapply({
     targetDir = DIR,
     stateDir = ensureAccessibleDir(path.join(targetDir, '.watcher-state')),
@@ -1570,6 +1563,7 @@ async function refreshTranslationsAndReapply({
     },
     isAsarBusyFn = null,
     onAppLaunch = false,
+    applyPending = false,
     updaterOptions = {}
 } = {}) {
     if (!updater || typeof updater.checkUpdate !== 'function') return { updated: false, reason: 'no_updater' };
@@ -1581,10 +1575,12 @@ async function refreshTranslationsAndReapply({
     const installedTranslationVersion = active ? active.version : currentVersion;
     const cacheFile = path.join(stateDir, 'update_check.json');
     const intervalMs = Number.isFinite(updaterOptions.intervalMs) ? updaterOptions.intervalMs : WEEKLY_INTERVAL_MS;
+    const forcePendingUnlock = Boolean(applyPending && hasPendingRetryScheduled(cacheFile));
     const launchedSinceCheck = updaterOptions.force === undefined
-        ? (onAppLaunch
-            ? shouldForceAppLaunchCheck({ cacheFile })
-            : (IS_MAC ? detectRecentAppLaunchTrigger({ cacheFile }) : false))
+        ? (forcePendingUnlock
+            || (onAppLaunch
+                ? shouldForceAppLaunchCheck({ cacheFile })
+                : (IS_MAC ? detectRecentAppLaunchTrigger({ cacheFile }) : false)))
         : false;
     const res = await updater.checkUpdate({
         currentVersion: installedTranslationVersion,
@@ -1772,7 +1768,8 @@ async function main() {
         // 即使 Windows 上 Antigravity 正在執行，checkUpdate() 仍可唯讀檢查並推進 update_check.json；
         // 僅在真有新版翻譯或本機 ASAR 待更新且被鎖檔時才回傳 exitCode = 75 觸發排程 15 分鐘重試。
         const onAppLaunch = args.includes('--on-app-launch');
-        const refreshRes = await refreshTranslationsAndReapply({ onAppLaunch }).catch(err => {
+        const applyPending = args.includes('--apply-pending');
+        const refreshRes = await refreshTranslationsAndReapply({ onAppLaunch, applyPending }).catch(err => {
             log('翻譯資料更新失敗，保留目前版本：' + (err && err.message ? err.message : err));
             // Do not report scheduler success after a failed translation
             // install/reapply. The next scheduled run still retries safely.
@@ -1823,9 +1820,11 @@ module.exports = {
     rotateLogFileInPlace,
     detectRecentAppLaunchTrigger,
     shouldForceAppLaunchCheck,
+    hasPendingRetryScheduled,
     isWindowsAsarBusyForAtomicSwap,
-    manageWindowsShortcut,
-    WINDOWS_SHORTCUT_NAME,
+    stopWindowsEventDaemon,
+    removeLegacyWindowsShortcuts,
+    LEGACY_WINDOWS_SHORTCUT_NAME,
     WEEKLY_INTERVAL_MS,
     refreshTranslationsAndReapply
 };

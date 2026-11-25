@@ -1,6 +1,6 @@
 // Windows Script Host (wscript.exe //B //NoLogo //E:JScript) silent launcher.
-// Runs node.exe with window style 0 (SW_HIDE) so the background scheduled task
-// and Desktop smart launcher never flash a console window or steal focus on Windows.
+// Runs node.exe with window style 0 (SW_HIDE) so the background event watcher
+// daemon never flashes a console window or steals focus on Windows.
 var args = WScript.Arguments;
 if (args.length < 2) {
     WScript.Quit(2);

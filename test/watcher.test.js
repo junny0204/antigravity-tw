@@ -941,74 +941,118 @@ test('shouldForceAppLaunchCheck enforces 30m anti-storm guard and retryScheduled
     assert.equal(seenForce, true, '--on-app-launch must pass force: true when past 30m guard');
 });
 
-test('launchAntigravityTw handles fast path, official update pre-launch patch, busy lock, and fail-open', t => {
-    const { launchAntigravityTw } = require('../scripts/launch_antigravity_tw');
-    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-smart-launch-'));
+test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pending apply on lockfile close, and applyPending bypass', async t => {
+    const {
+        acquireDaemonPid,
+        readDaemonPid,
+        createEventWatcher
+    } = require('../scripts/win_event_watcher');
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-win-ev-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const appPath = path.join(root, 'Antigravity');
+
+    // 1. Single-instance PID lock
+    const pidFile = path.join(root, '.watcher-state', 'win-daemon.pid');
+    const rel1 = acquireDaemonPid(pidFile, { currentPid: 11111, isAliveFn: (p) => p === 11111 });
+    assert.ok(rel1);
+    assert.equal(readDaemonPid(pidFile), 11111);
+    const dup = acquireDaemonPid(pidFile, { currentPid: 22222, isAliveFn: (p) => p === 11111 });
+    assert.equal(dup, null, 'must reject duplicate launch while live daemon PID exists');
+    const reclaimed = acquireDaemonPid(pidFile, { currentPid: 22222, isAliveFn: () => false });
+    assert.ok(reclaimed, 'must reclaim stale PID cleanly');
+    assert.equal(readDaemonPid(pidFile), 22222);
+    reclaimed();
+    assert.equal(fs.existsSync(pidFile), false);
+
+    // 2. Event watcher: exit 75 (asar locked) -> waits -> lockfile deleted -> immediately runs with applyPending=true
+    const programsDir = path.join(root, 'Programs');
+    const appPath = path.join(programsDir, 'antigravity');
     const resDir = path.join(appPath, 'resources');
+    const profileDir = path.join(root, 'AppData', 'Antigravity');
     const stateDir = path.join(root, '.watcher-state');
     fs.mkdirSync(resDir, { recursive: true });
+    fs.mkdirSync(profileDir, { recursive: true });
     fs.mkdirSync(stateDir, { recursive: true });
-    const exePath = path.join(appPath, 'Antigravity.exe');
     const asarPath = path.join(resDir, 'app.asar');
-    fs.writeFileSync(exePath, 'stub-exe');
-    fs.writeFileSync(asarPath, 'english-official-v2351');
+    const lockfilePath = path.join(profileDir, 'lockfile');
+    fs.writeFileSync(asarPath, 'official-english-v2351');
+    fs.writeFileSync(lockfilePath, '');
 
-    // 1. Official update detected & unlocked -> patches BEFORE launching exe
-    const order = [];
-    const res1 = launchAntigravityTw({
-        baseDir: root,
-        stateDir,
-        passArgs: ['--new-window'],
-        getAppInfoFn: () => ({ appPath, asarPath }),
-        isBusyFn: () => false,
-        localizeFn: () => { order.push('localize'); return true; },
-        shouldBgCheckFn: () => true,
-        spawnFn: (bin, args, opts) => {
-            order.push({ bin, args, windowsHide: opts.windowsHide });
-            return { unref() {} };
-        },
-        logFn: () => {}
-    });
-    assert.equal(res1.launched, true);
-    assert.equal(res1.localizedBeforeLaunch, true);
-    assert.equal(res1.backgroundCheckSpawned, true);
-    assert.equal(order[0], 'localize', 'must localize BEFORE launching Antigravity.exe');
-    assert.equal(order[1].bin, exePath);
-    assert.deepEqual(order[1].args, ['--new-window']);
-    assert.equal(order[1].windowsHide, false);
-    assert.equal(order[2].args[1], '--on-app-launch');
-    assert.equal(order[2].windowsHide, true);
-
-    // 2. Busy lock -> skips patching, still launches exe
-    let localizeCalls = 0;
-    const res2 = launchAntigravityTw({
+    const registeredWatchers = [];
+    const fakeWatch = (dir, opts, cb) => {
+        const entry = { dir, opts, cb, closed: false, on() {}, close() { this.closed = true; } };
+        registeredWatchers.push(entry);
+        return entry;
+    };
+    let busy = true;
+    const runs = [];
+    const daemon = createEventWatcher({
         baseDir: root,
         stateDir,
         getAppInfoFn: () => ({ appPath, asarPath }),
-        isBusyFn: () => true,
-        localizeFn: () => { localizeCalls++; return true; },
-        shouldBgCheckFn: () => false,
-        spawnFn: () => ({ unref() {} }),
-        logFn: () => {}
+        isBusyFn: () => busy,
+        needsLocalFn: () => true,
+        shouldLaunchCheckFn: () => true,
+        profileDirs: [profileDir],
+        watchFn: fakeWatch,
+        debounceMs: 20,
+        unlockPollMs: 5000,
+        fastUnlockRetryMs: 20,
+        suppressSelfMs: 50,
+        periodicTickMs: 60000,
+        logFn: () => {},
+        spawnOnceFn: async (opts) => {
+            runs.push(opts);
+            return { code: busy ? 75 : 0 };
+        }
     });
-    assert.equal(res2.launched, true);
-    assert.equal(localizeCalls, 0);
+    t.after(() => daemon.stop());
 
-    // 3. Fail-open -> localization error never blocks launching Antigravity.exe
-    const res3 = launchAntigravityTw({
-        baseDir: root,
-        stateDir,
-        getAppInfoFn: () => ({ appPath, asarPath }),
-        isBusyFn: () => false,
-        localizeFn: () => { throw new Error('EPERM Program Files'); },
-        shouldBgCheckFn: () => false,
-        spawnFn: () => ({ unref() {} }),
-        logFn: () => {}
+    daemon.start({ runInitialCheck: false });
+    assert.equal(registeredWatchers.length, 2, 'must watch parent Programs dir + profile dir');
+    assert.equal(registeredWatchers[0].dir, programsDir, 'must watch PARENT dir, never Antigravity\\ itself');
+    assert.equal(registeredWatchers[0].opts.recursive, true);
+    assert.equal(registeredWatchers[1].dir, profileDir);
+    assert.equal(registeredWatchers[1].opts.recursive, false);
+
+    // Startup check while Antigravity locks app.asar -> exit 75 -> pendingApply=true
+    await daemon.triggerRun({ reason: 'startup' });
+    assert.equal(daemon.getState().pendingApply, true);
+
+    // Unrelated file change in Programs/ must be ignored completely
+    registeredWatchers[0].cb('change', 'OtherApp\\foo.txt');
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(runs.length, 1);
+
+    // Antigravity closes -> lockfile removed & app.asar unlocked -> daemon auto-applies with applyPending=true!
+    busy = false;
+    fs.unlinkSync(lockfilePath);
+    registeredWatchers[1].cb('rename', 'lockfile');
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(runs.length, 2);
+    assert.equal(runs[1].applyPending, true, 'unlock after exit 75 must pass applyPending=true');
+    assert.equal(daemon.getState().pendingApply, false);
+
+    // 3. applyPending bypasses 15m retryScheduled cooldown ONLY when retryScheduled=true
+    const cacheFile = path.join(stateDir, 'update_check.json');
+    fs.writeFileSync(cacheFile, JSON.stringify({ lastChecked: Date.now() - 2 * 60 * 1000, retryScheduled: true }));
+    const prevEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    t.after(() => {
+        if (prevEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prevEnv;
     });
-    assert.equal(res3.launched, true);
-    assert.match(res3.localizeError, /EPERM Program Files/);
+    let seenForce = null;
+    await refreshTranslationsAndReapply({
+        targetDir: root,
+        stateDir,
+        currentVersion: '1.0.7',
+        applyPending: true,
+        updater: {
+            readActiveTranslation: () => null,
+            checkUpdate: async (opts) => { seenForce = opts.force; return { hasUpdate: false }; }
+        }
+    });
+    assert.equal(seenForce, true, '--apply-pending must force immediate check when retryScheduled=true');
 });
 
 

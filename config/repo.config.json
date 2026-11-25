@@ -1,9 +1,9 @@
 {
   "repo": "junny0204/antigravity-tw",
   "assetPrefix": "antigravity-tw-translations",
-  "engineVersion": "1.0.6",
+  "engineVersion": "1.0.7",
   "minEngineVersion": "1.0.0",
-  "maxEngineVersion": "1.0.6",
+  "maxEngineVersion": "1.0.7",
   "autoPublishDictRelease": true,
   "upstreams": {
     "qqxpee": {
