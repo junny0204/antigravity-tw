@@ -119,6 +119,13 @@ function waitForStableFile(file, { interval = 1000, timeout = 30000, samples = 3
     while (Date.now() - start <= timeout) {
         try {
             const stat = fs.statSync(file);
+            // If file has not been modified for >= 5s, confirm once after 50ms instead of burning 3s
+            if (stat.size > 0 && count === 0 && samples > 1 && (Date.now() - stat.mtimeMs) >= 5000) {
+                const firstKey = [stat.size, stat.mtimeMs, stat.ino].join(':');
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(50, interval));
+                const stat2 = fs.statSync(file);
+                if (stat2.size > 0 && [stat2.size, stat2.mtimeMs, stat2.ino].join(':') === firstKey) return;
+            }
             const key = [stat.size, stat.mtimeMs, stat.ino].join(':');
             count = stat.size > 0 && key === previous ? count + 1 : 1;
             previous = key;
@@ -1134,6 +1141,232 @@ function checkAndLocalizeApp(appInfo, {
     }
 }
 
+function prebuildLockedCandidate(appInfo, {
+    stateDir = path.join(DIR, '.watcher-state'),
+    build = buildArchive,
+    recipe = recipeHash(),
+    currentVersion = getLocalPackageVersion()
+} = {}) {
+    if (!appInfo || !appInfo.asarPath || !fs.existsSync(appInfo.asarPath)) {
+        return { built: false, reason: 'missing_asar' };
+    }
+    const { appPath, asarPath } = appInfo;
+    ensureRegularTarget(asarPath);
+    ensureAccessibleDir(stateDir);
+    const original = fs.readFileSync(asarPath);
+    const originalHash = digest(original);
+    const localized = isLocalized(original);
+    const statePath = path.join(stateDir, digest(appPath) + '.json');
+    let previous = {};
+    try { previous = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+    if (localized && previous.recipe === recipe && previous.output === originalHash) {
+        return { built: false, reason: 'up_to_date' };
+    }
+    const targetMeta = localized ? extractLocalizationMeta(original) : null;
+    const active = autoUpdater && typeof autoUpdater.readActiveTranslation === 'function'
+        ? autoUpdater.readActiveTranslation(DIR) : null;
+    const desiredTranslationVersion = active ? active.version : currentVersion;
+    const deployedTranslationVersion = targetMeta && (targetMeta.translationVersion || targetMeta.version);
+    const higherEngineVersion = targetMeta && targetMeta.version && compareVersions(targetMeta.version, currentVersion) > 0;
+    const externalSameVersion = targetMeta && targetMeta.version &&
+        compareVersions(targetMeta.version, currentVersion) === 0 &&
+        compareVersions(desiredTranslationVersion, deployedTranslationVersion || '') <= 0 &&
+        previous.output !== originalHash;
+    if (localized && (higherEngineVersion || externalSameVersion)) {
+        return { built: false, reason: 'external_newer' };
+    }
+
+    const desiredBrandTitle = resolveDesiredBrandTitle({ stateDir, previous, targetMeta, baseDir: DIR });
+    const prebuiltDir = path.join(stateDir, 'prebuilt');
+    const manifestPath = path.join(prebuiltDir, 'manifest.json');
+    const candidatePath = path.join(prebuiltDir, 'candidate.asar');
+    try {
+        if (fs.existsSync(manifestPath) && fs.existsSync(candidatePath)) {
+            const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            if (existing && existing.schema === 1 &&
+                existing.appPath === appPath &&
+                existing.asarPath === asarPath &&
+                existing.originalHash === originalHash &&
+                existing.recipe === recipe &&
+                existing.brandTitle === desiredBrandTitle &&
+                digest(fs.readFileSync(candidatePath)) === existing.resultHash) {
+                return { built: true, reused: true, manifest: existing };
+            }
+        }
+    } catch {}
+
+    const release = acquireLock(path.join(stateDir, 'run.lock'));
+    if (!release) return { built: false, reason: 'locked' };
+    let stageDir;
+    try {
+        stageDir = fs.mkdtempSync(path.join(stateDir, 'prestage-'));
+        const stageAsar = path.join(stageDir, 'app.asar');
+        fs.writeFileSync(stageAsar, original, { flag: 'wx' });
+        const unpacked = asarPath + '.unpacked';
+        if (fs.existsSync(unpacked)) fs.cpSync(unpacked, stageAsar + '.unpacked', { recursive: true });
+        build(stageDir, desiredBrandTitle);
+        const result = fs.readFileSync(stageAsar);
+        const resultHash = digest(result);
+        if (!result.includes(Buffer.from(NEEDLE))) {
+            throw new Error('預先建置缺少繁中特徵詞，放棄候選包。');
+        }
+        // Best-effort pre-write official backup while app is running (.bak is unlocked)
+        if (!localized) {
+            try {
+                let needBackup = true;
+                if (fs.existsSync(asarPath + '.bak')) {
+                    needBackup = digest(fs.readFileSync(asarPath + '.bak')) !== originalHash;
+                }
+                if (needBackup) {
+                    const bakTmp = path.join(path.dirname(asarPath), `.autolocalize-bak-${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+                    try {
+                        fs.writeFileSync(bakTmp, original, { flag: 'wx' });
+                        fsyncFile(bakTmp);
+                        safeReplaceFile(bakTmp, asarPath + '.bak', null, null, null, { atomicRequired: true });
+                    } finally {
+                        try { fs.rmSync(bakTmp, { force: true }); } catch {}
+                    }
+                }
+            } catch {}
+        }
+        fs.mkdirSync(prebuiltDir, { recursive: true });
+        const candTmp = path.join(prebuiltDir, `candidate-${process.pid}.tmp`);
+        fs.writeFileSync(candTmp, result, { flag: 'wx' });
+        fsyncFile(candTmp);
+        safeReplaceFile(candTmp, candidatePath);
+        const manifest = {
+            schema: 1,
+            appPath,
+            asarPath,
+            originalHash,
+            resultHash,
+            recipe,
+            brandTitle: desiredBrandTitle,
+            createdAt: new Date().toISOString()
+        };
+        const manTmp = path.join(prebuiltDir, `manifest-${process.pid}.tmp`);
+        fs.writeFileSync(manTmp, JSON.stringify(manifest) + '\n', { flag: 'wx' });
+        fsyncFile(manTmp);
+        safeReplaceFile(manTmp, manifestPath);
+        log('預先建置完成：繁中候選包已就緒，關閉 Antigravity 後將瞬間自動套用。');
+        return { built: true, reused: false, manifest };
+    } finally {
+        if (stageDir) {
+            try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch {}
+        }
+        release();
+    }
+}
+
+function applyPrebuiltCandidateFast(appInfo, {
+    stateDir = path.join(DIR, '.watcher-state'),
+    recipe = recipeHash(),
+    isBusyFn = isWindowsAsarBusyForAtomicSwap,
+    cleanCacheFn = cleanElectronCache
+} = {}) {
+    if (!appInfo || !appInfo.asarPath || !fs.existsSync(appInfo.asarPath)) {
+        return { applied: false, reason: 'missing_asar' };
+    }
+    const { appPath, asarPath } = appInfo;
+    const prebuiltDir = path.join(stateDir, 'prebuilt');
+    const manifestPath = path.join(prebuiltDir, 'manifest.json');
+    const candidatePath = path.join(prebuiltDir, 'candidate.asar');
+    if (!fs.existsSync(manifestPath) || !fs.existsSync(candidatePath)) {
+        return { applied: false, reason: 'no_prebuilt' };
+    }
+    let manifest;
+    try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch {
+        return { applied: false, reason: 'bad_manifest' };
+    }
+    if (!manifest || manifest.schema !== 1 || manifest.appPath !== appPath ||
+        manifest.asarPath !== asarPath || manifest.recipe !== recipe) {
+        return { applied: false, reason: 'stale_manifest' };
+    }
+    if (isBusyFn(asarPath)) {
+        return { applied: false, reason: 'busy' };
+    }
+    const release = acquireLock(path.join(stateDir, 'run.lock'));
+    if (!release) return { applied: false, reason: 'locked' };
+    const t0 = Date.now();
+    let stagedPath = null;
+    try {
+        ensureRegularTarget(asarPath);
+        const liveBytes = fs.readFileSync(asarPath);
+        const liveHash = digest(liveBytes);
+        if (liveHash === manifest.resultHash && isLocalized(liveBytes)) {
+            try { fs.rmSync(prebuiltDir, { recursive: true, force: true }); } catch {}
+            return { applied: true, alreadyApplied: true, elapsedMs: Date.now() - t0 };
+        }
+        if (liveHash !== manifest.originalHash) {
+            return { applied: false, reason: 'stale_original' };
+        }
+        const candidateBytes = fs.readFileSync(candidatePath);
+        if (digest(candidateBytes) !== manifest.resultHash || !candidateBytes.includes(Buffer.from(NEEDLE))) {
+            return { applied: false, reason: 'corrupt_candidate' };
+        }
+        const liveLocalized = isLocalized(liveBytes);
+        if (!liveLocalized) {
+            ensureRegularTarget(asarPath + '.bak');
+            let needBackup = true;
+            if (fs.existsSync(asarPath + '.bak')) {
+                needBackup = digest(fs.readFileSync(asarPath + '.bak')) !== liveHash;
+            }
+            if (needBackup) {
+                const bakTmp = path.join(path.dirname(asarPath), `.autolocalize-bak-${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+                try {
+                    fs.writeFileSync(bakTmp, liveBytes, { flag: 'wx' });
+                    fsyncFile(bakTmp);
+                    safeReplaceFile(bakTmp, asarPath + '.bak', null, null, null, { atomicRequired: true });
+                } finally {
+                    try { fs.rmSync(bakTmp, { force: true }); } catch {}
+                }
+            }
+            if (digest(fs.readFileSync(asarPath + '.bak')) !== liveHash) {
+                return { applied: false, reason: 'backup_mismatch' };
+            }
+        } else if (!fs.existsSync(asarPath + '.bak')) {
+            return { applied: false, reason: 'missing_backup' };
+        }
+
+        stagedPath = path.join(path.dirname(asarPath), `.autolocalize-fast-${process.pid}-${crypto.randomBytes(4).toString('hex')}.asar`);
+        fs.writeFileSync(stagedPath, candidateBytes, { flag: 'wx' });
+        fsyncFile(stagedPath);
+        try {
+            fs.renameSync(stagedPath, asarPath);
+            stagedPath = null;
+        } catch (renameErr) {
+            if (renameErr && (renameErr.code === 'EBUSY' || renameErr.code === 'EPERM' || renameErr.code === 'EACCES')) {
+                return { applied: false, reason: 'busy' };
+            }
+            throw renameErr;
+        }
+        if (digest(fs.readFileSync(asarPath)) !== manifest.resultHash) {
+            return { applied: false, reason: 'post_verify_mismatch' };
+        }
+        const statePath = path.join(stateDir, digest(appPath) + '.json');
+        const stateTmp = statePath + '.tmp';
+        fs.writeFileSync(stateTmp, JSON.stringify({
+            recipe,
+            output: manifest.resultHash,
+            brandTitle: manifest.brandTitle || 'english',
+            updatedAt: new Date().toISOString()
+        }) + '\n');
+        safeReplaceFile(stateTmp, statePath, 0o644);
+        cleanCacheFn();
+        try { fs.rmSync(prebuiltDir, { recursive: true, force: true }); } catch {}
+        const elapsedMs = Date.now() - t0;
+        log(`繁中套件已於關閉瞬間完成套用並驗證（快速置換 ${elapsedMs}ms）；下次開啟 Antigravity 即為繁體中文。`);
+        return { applied: true, elapsedMs };
+    } finally {
+        if (stagedPath) {
+            try { fs.rmSync(stagedPath, { force: true }); } catch {}
+        }
+        release();
+    }
+}
+
 function buildWindowsTaskCommand(nodePath, scriptPath) {
     return `"${nodePath}" "${scriptPath}"`;
 }
@@ -1741,6 +1974,19 @@ async function main() {
         return;
     }
 
+    if (args.includes('--prebuild-only')) {
+        try {
+            rotateKnownLogs();
+            if (fs.existsSync(path.join(DIR, '.disable_autowatcher'))) return;
+            const appInfo = getAppInfo();
+            if (!appInfo) return;
+            prebuildLockedCandidate(appInfo);
+        } catch (err) {
+            log('預先建置繁中候選包略過：' + (err && err.message ? err.message : err));
+        }
+        return;
+    }
+
     try {
         rotateKnownLogs();
         if (fs.existsSync(path.join(DIR, '.disable_autowatcher'))) return;
@@ -1795,6 +2041,8 @@ async function main() {
 if (require.main === module) main();
 module.exports = {
     checkAndLocalizeApp,
+    prebuildLockedCandidate,
+    applyPrebuiltCandidateFast,
     resumePendingAsarRecovery,
     exchangeAsar,
     exchangeCheckedAsar,

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { checkAndLocalizeApp, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash, rotateLogFileInPlace, detectRecentAppLaunchTrigger, shouldForceAppLaunchCheck, refreshTranslationsAndReapply } = require('../auto_localize_watcher');
+const { checkAndLocalizeApp, prebuildLockedCandidate, applyPrebuiltCandidateFast, exchangeAsar, waitForStableFile, acquireLock, digest, safeReplaceFile, ensureAccessibleDir, recipeHash, rotateLogFileInPlace, detectRecentAppLaunchTrigger, shouldForceAppLaunchCheck, refreshTranslationsAndReapply } = require('../auto_localize_watcher');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ag-watcher-'));
@@ -985,6 +985,8 @@ test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pend
     };
     let busy = true;
     const runs = [];
+    let prebuildCalls = 0;
+    let fastApplyCalls = 0;
     const daemon = createEventWatcher({
         baseDir: root,
         stateDir,
@@ -992,6 +994,8 @@ test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pend
         isBusyFn: () => busy,
         needsLocalFn: () => true,
         shouldLaunchCheckFn: () => true,
+        fastApplyFn: () => { fastApplyCalls++; return { applied: false, reason: 'no_prebuilt' }; },
+        hasPendingTranslationFn: () => false,
         profileDirs: [profileDir],
         watchFn: fakeWatch,
         debounceMs: 20,
@@ -1000,6 +1004,7 @@ test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pend
         suppressSelfMs: 50,
         periodicTickMs: 60000,
         logFn: () => {},
+        spawnPrebuildFn: async () => { prebuildCalls++; return true; },
         spawnOnceFn: async (opts) => {
             runs.push(opts);
             return { code: busy ? 75 : 0 };
@@ -1014,22 +1019,24 @@ test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pend
     assert.equal(registeredWatchers[1].dir, profileDir);
     assert.equal(registeredWatchers[1].opts.recursive, false);
 
-    // Startup check while Antigravity locks app.asar -> exit 75 -> pendingApply=true
+    // Startup check while Antigravity locks app.asar -> exit 75 -> pendingApply=true & triggers background prebuild
     await daemon.triggerRun({ reason: 'startup' });
     assert.equal(daemon.getState().pendingApply, true);
+    assert.equal(prebuildCalls, 1, 'exit 75 must kick off background prebuild while Antigravity is still running');
 
     // Unrelated file change in Programs/ must be ignored completely
     registeredWatchers[0].cb('change', 'OtherApp\\foo.txt');
     await new Promise(r => setTimeout(r, 40));
     assert.equal(runs.length, 1);
 
-    // Antigravity closes -> lockfile removed & app.asar unlocked -> daemon auto-applies with applyPending=true!
+    // Antigravity closes -> lockfile removed & app.asar unlocked -> tries fastApply first, falls back with applyPending=true!
     busy = false;
     fs.unlinkSync(lockfilePath);
     registeredWatchers[1].cb('rename', 'lockfile');
     await new Promise(r => setTimeout(r, 100));
+    assert.equal(fastApplyCalls, 1, 'unlock must attempt instant in-process fastApply first');
     assert.equal(runs.length, 2);
-    assert.equal(runs[1].applyPending, true, 'unlock after exit 75 must pass applyPending=true');
+    assert.equal(runs[1].applyPending, true, 'unlock fallback after exit 75 must pass applyPending=true');
     assert.equal(daemon.getState().pendingApply, false);
 
     // 3. applyPending bypasses 15m retryScheduled cooldown ONLY when retryScheduled=true
@@ -1053,6 +1060,82 @@ test('win_event_watcher handles PID lock, app.asar event filtering, exit 75 pend
         }
     });
     assert.equal(seenForce, true, '--apply-pending must force immediate check when retryScheduled=true');
+});
+
+test('prebuildLockedCandidate and applyPrebuiltCandidateFast swap locked ASAR in milliseconds upon close', t => {
+    const f = fixture(t);
+    // 1. Prebuild while Antigravity is still running (asarPath is readable)
+    const pre1 = prebuildLockedCandidate(f.appInfo, {
+        stateDir: f.stateDir,
+        recipe: 'recipe-fast-v1',
+        build: f.options.build
+    });
+    assert.equal(pre1.built, true);
+    assert.equal(pre1.reused, false);
+    assert.equal(f.builds(), 1);
+    assert.equal(fs.readFileSync(f.asarPath + '.bak', 'utf8'), 'official-v1', 'prebuild must pre-write verified backup');
+    assert.equal(f.read(), 'official-v1', 'prebuild must not touch live app.asar');
+
+    // 2. Second prebuild call with same originalHash & recipe reuses candidate without rebuilding
+    const pre2 = prebuildLockedCandidate(f.appInfo, {
+        stateDir: f.stateDir,
+        recipe: 'recipe-fast-v1',
+        build: f.options.build
+    });
+    assert.equal(pre2.built, true);
+    assert.equal(pre2.reused, true);
+    assert.equal(f.builds(), 1);
+
+    // 3. Fast apply refuses cleanly while still busy
+    const busyRes = applyPrebuiltCandidateFast(f.appInfo, {
+        stateDir: f.stateDir,
+        recipe: 'recipe-fast-v1',
+        isBusyFn: () => true,
+        cleanCacheFn: () => {}
+    });
+    assert.equal(busyRes.applied, false);
+    assert.equal(busyRes.reason, 'busy');
+    assert.equal(f.read(), 'official-v1');
+
+    // 4. Moment Antigravity closes (isBusy=false) -> instant atomic swap without rebuilding!
+    let cacheCleaned = false;
+    const fastRes = applyPrebuiltCandidateFast(f.appInfo, {
+        stateDir: f.stateDir,
+        recipe: 'recipe-fast-v1',
+        isBusyFn: () => false,
+        cleanCacheFn: () => { cacheCleaned = true; }
+    });
+    assert.equal(fastRes.applied, true);
+    assert.equal(cacheCleaned, true);
+    assert.equal(f.builds(), 1, 'fast apply must not rebuild ASAR');
+    assert.equal(f.read(), 'official-v1\n命令選擇區');
+    assert.equal(fs.existsSync(path.join(f.stateDir, 'prebuilt')), false, 'prebuilt dir must be cleaned up after swap');
+    const receipt = JSON.parse(fs.readFileSync(path.join(f.stateDir, digest(f.appInfo.appPath) + '.json'), 'utf8'));
+    assert.equal(receipt.output, digest(fs.readFileSync(f.asarPath)));
+
+    // 5. Stale originalHash (another official update landed) -> refuses safely
+    fs.writeFileSync(f.asarPath, 'official-v2');
+    prebuildLockedCandidate(f.appInfo, { stateDir: f.stateDir, recipe: 'recipe-fast-v1', build: f.options.build });
+    fs.writeFileSync(f.asarPath, 'official-v3-newer');
+    const staleRes = applyPrebuiltCandidateFast(f.appInfo, {
+        stateDir: f.stateDir,
+        recipe: 'recipe-fast-v1',
+        isBusyFn: () => false,
+        cleanCacheFn: () => {}
+    });
+    assert.equal(staleRes.applied, false);
+    assert.equal(staleRes.reason, 'stale_original');
+    assert.equal(f.read(), 'official-v3-newer');
+});
+
+test('waitForStableFile fast-confirms files untouched for >= 5s instead of burning 3s', t => {
+    const f = fixture(t);
+    const oldTime = new Date(Date.now() - 30000);
+    fs.utimesSync(f.asarPath, oldTime, oldTime);
+    const t0 = Date.now();
+    waitForStableFile(f.asarPath, { interval: 1000, timeout: 5000, samples: 3 });
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 500, `expected <500ms fast stability check, took ${elapsed}ms`);
 });
 
 

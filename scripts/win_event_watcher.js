@@ -22,10 +22,10 @@ const { spawn } = require('child_process');
 const watcher = require('../auto_localize_watcher');
 
 const DIR = path.resolve(__dirname, '..');
-const DEFAULT_DEBOUNCE_MS = 3000;
-const DEFAULT_UNLOCK_POLL_MS = 5000;
-const DEFAULT_FAST_UNLOCK_RETRY_MS = 500;
-const DEFAULT_FAST_UNLOCK_MAX_ATTEMPTS = 24; // up to ~12s after lockfile disappears
+const DEFAULT_DEBOUNCE_MS = 2500;
+const DEFAULT_UNLOCK_POLL_MS = 300;
+const DEFAULT_FAST_UNLOCK_RETRY_MS = 150;
+const DEFAULT_FAST_UNLOCK_MAX_ATTEMPTS = 40; // up to ~6s tight check after lockfile disappears
 const DEFAULT_SUPPRESS_SELF_MS = 6000;
 const DEFAULT_PERIODIC_TICK_MS = 6 * 60 * 60 * 1000; // 6h wall-clock check (Sleep/Hibernate safe)
 
@@ -135,9 +135,12 @@ function createEventWatcher({
     isBusyFn = watcher.isWindowsAsarBusyForAtomicSwap,
     needsLocalFn = (info) => needsLocalLocalization(info, { stateDir }),
     shouldLaunchCheckFn = (cacheFile) => !fs.existsSync(cacheFile) || watcher.shouldForceAppLaunchCheck({ cacheFile }),
+    fastApplyFn = (info) => watcher.applyPrebuiltCandidateFast(info, { stateDir }),
+    hasPendingTranslationFn = () => watcher.hasPendingRetryScheduled(path.join(stateDir, 'update_check.json')),
     profileDirs = getWindowsProfileDirs(),
     watchFn = fs.watch,
     spawnOnceFn = null,
+    spawnPrebuildFn = null,
     debounceMs = DEFAULT_DEBOUNCE_MS,
     unlockPollMs = DEFAULT_UNLOCK_POLL_MS,
     fastUnlockRetryMs = DEFAULT_FAST_UNLOCK_RETRY_MS,
@@ -169,9 +172,20 @@ function createEventWatcher({
         child.on('close', (code) => resolve({ code: code == null ? 1 : code }));
     }));
 
+    const runPrebuildChild = spawnPrebuildFn || (() => new Promise((resolve) => {
+        const child = spawn(nodePath, [watcherScript, '--prebuild-only'], {
+            cwd: baseDir,
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        child.on('error', () => resolve(false));
+        child.on('close', (code) => resolve(code === 0));
+    }));
+
     const watchers = [];
     let stopped = false;
     let running = false;
+    let prebuilding = false;
     let pendingApply = false;
     let queuedRun = null;
     let suppressAsarUntil = 0;
@@ -197,8 +211,52 @@ function createEventWatcher({
         fastUnlockTimer = clearTimer(fastUnlockTimer);
     }
 
+    function triggerPrebuildIfNeeded() {
+        if (stopped || prebuilding) return;
+        const info = currentAppInfo || getAppInfoFn();
+        if (!info || !needsLocalFn(info)) return;
+        prebuilding = true;
+        Promise.resolve(runPrebuildChild()).catch(() => false).finally(() => {
+            prebuilding = false;
+        });
+    }
+
+    function tryInstantApplyOrFallback(reason) {
+        if (stopped || running) return false;
+        const info = currentAppInfo || getAppInfoFn();
+        if (!info || !fs.existsSync(info.asarPath)) return false;
+        if (isBusyFn(info.asarPath)) return false;
+
+        // Fast path: swap prebuilt candidate in-process in ~150ms before user can reopen Antigravity!
+        if (needsLocalFn(info)) {
+            let fastRes = null;
+            try {
+                fastRes = fastApplyFn(info);
+            } catch {}
+            if (fastRes && fastRes.applied) {
+                suppressAsarUntil = Date.now() + suppressSelfMs;
+                pendingApply = false;
+                loggedPendingLock = false;
+                consecutiveErrors = 0;
+                stopUnlockPoll();
+                if (hasPendingTranslationFn()) {
+                    triggerRun({ onAppLaunch: false, applyPending: true, reason: reason + '_translation' });
+                }
+                return true;
+            }
+            if (fastRes && fastRes.reason === 'busy') {
+                return false;
+            }
+        }
+        stopUnlockPoll();
+        triggerRun({ onAppLaunch: false, applyPending: true, reason });
+        return true;
+    }
+
     function ensureUnlockPoll() {
-        if (stopped || unlockPollTimer) return;
+        if (stopped) return;
+        triggerPrebuildIfNeeded();
+        if (unlockPollTimer) return;
         unlockPollTimer = setInterval(() => {
             if (stopped) { stopUnlockPoll(); return; }
             if (fs.existsSync(disableFlag)) { stop(); return; }
@@ -207,8 +265,7 @@ function createEventWatcher({
             const info = currentAppInfo || getAppInfoFn();
             if (!info || !fs.existsSync(info.asarPath)) return;
             if (!isBusyFn(info.asarPath)) {
-                stopUnlockPoll();
-                triggerRun({ onAppLaunch: false, applyPending: true, reason: 'unlock_watchdog' });
+                tryInstantApplyOrFallback('unlock_watchdog');
             }
         }, unlockPollMs);
     }
@@ -221,9 +278,7 @@ function createEventWatcher({
         if (!info || !fs.existsSync(info.asarPath)) return;
         if (!pendingApply && !needsLocalFn(info)) return;
         if (!isBusyFn(info.asarPath)) {
-            stopUnlockPoll();
-            triggerRun({ onAppLaunch: false, applyPending: true, reason: 'app_closed' });
-            return;
+            if (tryInstantApplyOrFallback('app_closed')) return;
         }
         if (attempt < fastUnlockMaxAttempts) {
             fastUnlockTimer = setTimeout(() => scheduleFastUnlockApply(attempt + 1), fastUnlockRetryMs);
