@@ -1,18 +1,18 @@
 {
   "translationVersion": "1.0.8",
-  "lastSyncedAt": "2026-11-25T19:40:00.904Z",
+  "lastSyncedAt": "2026-11-28T09:37:41.745Z",
   "qqxpee": {
     "repo": "qqxpee/antigravity2-cn",
-    "sha": "1f4e9eabac0b4d531fd1acec910efded71dcb8ed",
+    "sha": "8ee9617838e7512acb915af06eb30fde5ee321a8",
     "engineHashes": {
+      "localization_engine.js": "ab525d4a995ff59303a033b4d7acd543d14f023f9e40a36be3384df101a8b6a3",
       "src/asar_patcher.js": "33d7e0229e6c08c91d18a82056a3cc3e2d1c4c35e57ab04fe42bbbe688a64cf3",
-      "src/main_patches.js": "01b0e2ad913decb30c078f0d27524c00839f2a1848cae1dddca74c867fd56587",
-      "localization_engine.js": "3f06f6a42ea0dbaa7c719f8565af4763371b4fc719972438a066d2df97efffcf",
-      "src/preload_runtime.js": "fb484a5fd19453aacfd780b2738ccdd5c2bb93f2fb3cf1248cc4c1770c583037"
+      "src/main_patches.js": "88747014cc37db93412282dd0f9f2a1270fc0f73b5578cf566ba4b3793631117",
+      "src/preload_runtime.js": "f194bc4be656f74247c3c5097f47a8a2bcd72ca6957c89b78c9829070661a711"
     }
   },
   "atonnyshen": {
     "repo": "atonnyshen/antigravity2-TW",
-    "sha": "d530037fab5efa303dc0be7ff149812b01d4bc5f"
+    "sha": "cb726cec8e280c7709318410df75dc310297f8e9"
   }
 }
